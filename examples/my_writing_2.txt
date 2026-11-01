@@ -1,0 +1,5 @@
+Hey all - quick update on the hackathon project. We got the eval harness working end to end (finally!) and the results are kind of surprising: the smaller model beats the bigger one on the multi-step problems. I'm not sure yet if that's real or a bug in how we parse answers, so I'm going to dig into it this weekend.
+
+If anyone wants to pair on it, let me know. No pressure though.
+
+- Alex

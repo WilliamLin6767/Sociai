@@ -1,0 +1,8 @@
+{
+  "target": "Professor Percy Liang, Stanford University (Computer Science, Center for Research on Foundation Models)",
+  "goal": "I'm an undergrad hoping to do research on language model evaluation. I'd like to ask whether his group takes undergraduate research assistants next quarter, or whether a PhD student in the group might be open to a short chat.",
+  "sender_background": "Junior studying CS at Stanford. Took CS224N (NLP) and CS229 (ML). Built a small benchmark comparing how open-source LLMs handle multi-step arithmetic word problems; code is on GitHub. Can commit ~10 hours/week.",
+  "channel": "email",
+  "max_words": 170,
+  "writing_sample_files": ["my_writing_1.txt", "my_writing_2.txt"]
+}

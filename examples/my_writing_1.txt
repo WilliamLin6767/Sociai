@@ -1,0 +1,8 @@
+Hi Maya,
+
+Thanks again for the help on the pset last week, the hint about normalizing the gradients is what finally made it click. I ended up going down a rabbit hole afterwards and wrote a tiny script to visualize it, happy to send it over if useful.
+
+Also - are you still running the reading group on Thursdays? I'd love to sit in if there's space.
+
+Best,
+Alex
