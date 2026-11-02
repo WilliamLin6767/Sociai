@@ -65,6 +65,14 @@ def main():
         return
 
     print("\n=== RESEARCH ===\n" + dossier.as_text())
+    c = dossier.contact
+    if c.get("emails") or c.get("phones"):
+        print("\n=== CONTACT ===")
+        for e in c["emails"]:
+            print(f"Email: {e['address']}{' (likely, not published)' if e['kind'] == 'likely' else ''} [{e['source']}]")
+        for ph in c["phones"]:
+            label = f" ({ph['label']})" if ph["label"] else ""
+            print(f"Phone{label}: {ph['number']} [{ph['source']}]")
     print("\n=== DRAFT ===")
     if draft.subject:
         print(f"Subject: {draft.subject}\n")

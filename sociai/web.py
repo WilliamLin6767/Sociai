@@ -62,7 +62,7 @@ import stripe
 from . import monitoring, tracker
 from .billing import PLANS, Billing, BillingError
 from .config import Settings, is_disposable, load_env
-from .engine import Dossier, Engine, OutreachRequest, Refused, RunUsage
+from .engine import Dossier, Engine, OutreachRequest, Refused, RunUsage, clean_contact
 from .resume import KINDS, MAX_BYTES as MAX_RESUME, MAX_TEXT as MAX_RESUME_TEXT, ResumeError, detect, extract_text
 from .supabase import Supabase, SupabaseError, SupabaseRefused
 
@@ -247,6 +247,7 @@ def draft_work(data, resume_text=""):
     # The resume comes from the user's saved profile, never from the request body.
     req = OutreachRequest(**{**data["request"], "resume_text": resume_text})
     dossier = Dossier(**data["dossier"])
+    dossier.contact = clean_contact(dossier.contact)  # it comes back from the browser
     revise = data.get("revise")
     if revise is not None and not (isinstance(revise, dict) and {"body", "instruction"} <= revise.keys()):
         raise ValueError("revise needs body and instruction")
