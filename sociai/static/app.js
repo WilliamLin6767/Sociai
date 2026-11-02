@@ -44,7 +44,12 @@ const I = {
   auto: svg('<circle cx="8" cy="8" r="5.5"/><path d="M8 2.5v11" /><path d="M8 2.5a5.5 5.5 0 0 1 0 11z" fill="currentColor"/>'),
   caret: svg('<path d="m4 10 4-4 4 4"/>'),
 };
-const MARK = `<svg class="brand-mark" viewBox="0 0 32 32" aria-hidden="true"><circle cx="9" cy="22" r="3.6" fill="currentColor"/><circle cx="23" cy="10" r="3.6" fill="none" stroke="currentColor" stroke-width="2"/><path d="M11.8 19.6C15 16 14.6 21.2 20.4 12.4" fill="none" stroke="var(--thread)" stroke-width="2.2" stroke-linecap="round"/></svg>`;
+// The logo: two overlapping speech bubbles (forest green and tan) with a spark where they meet.
+const MARK = `<svg class="brand-mark" viewBox="0 0 232 216" aria-hidden="true">
+  <path class="b-green" d="M0 216V124C0 82 34 49 76 49h21c41 0 75 33 75 75s-32 66-72 66H44c-20 0-34 10-44 26z"/>
+  <path class="b-tan" d="M135 0h62c19 0 35 16 35 35v47c0 38-31 70-70 70h-22c-39 0-70-32-70-70V65C70 29 99 0 135 0z"/>
+  <path class="b-star" d="M120 79c3 17 10 24 27 27-17 3-24 10-27 27-3-17-10-24-27-27 17-3 24-10 27-27z"/></svg>`;
+const WORDMARK = '<span class="brand-word">Socia<span class="brand-i">ı</span></span>';
 const kbdMod = /Mac|iPhone|iPad/.test(navigator.platform) ? "⌘" : "Ctrl";
 
 /* ───────── Domain ───────── */
@@ -265,9 +270,11 @@ function setCredits(n) {
   if (note) note.innerHTML = creditNote();
 }
 
-const accountButton = () => `<div class="account">
-  <button type="button" class="credits-btn" data-act="account" aria-haspopup="true" aria-expanded="false" aria-label="Account and credits">
-    <span class="credits-dot" aria-hidden="true"></span><span id="credits-n">${creditLabel(account.credits)}</span></button></div>`;
+// The credit balance links to Pricing; the round initial next to it opens the account menu.
+const accountButton = () => `<a class="credits-btn" href="#/pricing" title="Get more credits" aria-label="${creditLabel(account.credits)}. Get more credits">
+    <span class="credits-dot" aria-hidden="true"></span><span id="credits-n">${creditLabel(account.credits)}</span></a>
+  <div class="account"><button type="button" class="avatar-btn" data-act="account" aria-haspopup="true" aria-expanded="false"
+    aria-label="Your account: profile, billing and sign out" title="${esc(account.email || "Your account")}">${esc((account.email || "?").trim()[0] || "?")}</button></div>`;
 
 function toggleAccountMenu(btn) {
   if ($(".account .menu")) return closeMenus();
@@ -276,10 +283,10 @@ function toggleAccountMenu(btn) {
   btn.insertAdjacentHTML("afterend", `<div class="menu menu-down" role="menu">
     <p class="menu-head"><span class="label">Signed in as</span><span class="menu-email">${esc(account.email)}</span></p>
     <p class="menu-note">${creditLabel(account.credits)} left. One credit covers a research run plus up to 3 drafts or revisions for that person.</p>
-    <hr><a class="mi" role="menuitem" href="#/pricing">Buy credits</a>
+    <hr><a class="mi" role="menuitem" href="#/profile">Your profile</a>
     <a class="mi" role="menuitem" href="#/account">Account and billing</a>
-    <a class="mi" role="menuitem" href="#/profile">Your profile</a>
-    <button type="button" class="mi" role="menuitem" data-act="sign-out">Sign out</button></div>`);
+    <a class="mi" role="menuitem" href="#/pricing">Buy credits</a>
+    <hr><button type="button" class="mi" role="menuitem" data-act="sign-out">Sign out</button></div>`);
   $(".account .mi").focus();
 }
 
@@ -765,7 +772,7 @@ function themeButton() {
 
 function renderBar(route, p) {
   $("#bar").innerHTML = `<div class="page bar-inner">
-    <a class="brand" href="#/" aria-label="Sociai: your desk">${MARK}<span class="brand-word">Sociai</span></a>
+    <a class="brand" href="#/" aria-label="Sociai: your desk">${MARK}${WORDMARK}</a>
     ${p ? `<div class="crumb"><span class="crumb-sep" aria-hidden="true">/</span><span class="crumb-who" id="crumb-who">${esc(nameOf(p))}</span><span class="crumb-goal" id="crumb-goal">${esc(p.brief.goal)}</span></div>
       <div id="nav-slot">${threadNav(p, route.stage)}</div>`
       : PAGE_TITLES[route.view] ? `<div class="crumb"><span class="crumb-sep" aria-hidden="true">/</span><span class="crumb-who">${PAGE_TITLES[route.view]}</span></div>`
