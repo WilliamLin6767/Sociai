@@ -1,6 +1,6 @@
 """Web app server (python -m sociai.web -> http://localhost:8000).
 
-The page lives in sociai/static/. Users sign in with Supabase (email magic link) and
+The page lives in sociai/static/. Users sign in with Supabase (email and password) and
 every /api/* call carries their access token as "Authorization: Bearer <token>".
 Credits, limits and job records live in Postgres (supabase/migrations/); the server
 changes them only through the database functions defined there.
@@ -12,7 +12,9 @@ changes them only through the database functions defined there.
   POST /api/draft          {request, dossier, project_id, revise?}   -> {job, credits, drafts_left}
   GET  /api/jobs/<id>?after=N  -> {status, events (from index N), result, error}
   GET  /api/profile        background, defaults, writing samples, resume text
-  PUT  /api/profile        {background?, default_channel?, default_max_words?, resume_text?}
+  PUT  /api/profile        {background?, default_channel?, default_max_words?, resume_text?,
+                            main_goal?, main_goal_note?}
+  POST /api/profile/onboarded    onboarding is over (finished or skipped); only the first call counts
   PUT  /api/profile/samples      {samples: [text, ...]}  (replaces the list)
   POST /api/profile/resume?filename=...   raw PDF or DOCX body, up to 5 MB
   DELETE /api/profile/resume
@@ -64,6 +66,7 @@ MAX_BODY = 200 * 1024
 MAX_PROJECT_BODY = 2_100_000  # the database caps a project's saved state at 2 MB
 DRAIN_LIMIT = 16 * 1024 * 1024  # oversized bodies up to this size are read so the 413 reaches the client
 CHANNELS = ("email", "linkedin", "direct message")
+MAIN_GOALS = ("", "research", "job", "fundraising", "sales", "networking", "other")
 RESUME_BUCKET = "resumes"
 MAX_WEBHOOK_BODY = 1024 * 1024
 UUID = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
@@ -312,6 +315,9 @@ class Handler(BaseHTTPRequestHandler):
             return self._stripe_webhook()
         if url.path == "/api/profile/resume":
             return self._upload_resume(self._user(), url)
+        if url.path == "/api/profile/onboarded":
+            self._user()
+            return self._json(200, supa.rpc_as(self._token, "sociai_finish_onboarding"))
         if url.path == "/api/checkout":
             user = self._user()
             plan = self._read_json().get("plan")
@@ -369,9 +375,13 @@ class Handler(BaseHTTPRequestHandler):
                 "p_channel": data.get("default_channel"),
                 "p_max_words": data.get("default_max_words"),
                 "p_resume_text": self._text(data, "resume_text", MAX_RESUME_TEXT),
+                "p_main_goal": data.get("main_goal"),
+                "p_main_goal_note": self._text(data, "main_goal_note", 500),
             }
             if fields["p_channel"] is not None and fields["p_channel"] not in CHANNELS:
                 raise Reject(400, "Choose email, LinkedIn or direct message as your default channel.")
+            if fields["p_main_goal"] is not None and fields["p_main_goal"] not in MAIN_GOALS:
+                raise Reject(400, "Choose one of the listed goals.")
             words = fields["p_max_words"]
             if words is not None and (not isinstance(words, int) or isinstance(words, bool) or not 40 <= words <= 600):
                 raise Reject(400, "The default word limit must be between 40 and 600.")

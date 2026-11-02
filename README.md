@@ -46,7 +46,15 @@ It prints cost, time and token counts per model and step, then the two drafts si
 
 ## Accounts and credits
 
-People sign in with an email magic link (Supabase Auth); there are no passwords. Each new account gets **2 free credits**. **1 credit = one research run plus up to 3 drafts or revisions for that person.** A research run that fails is refunded automatically. The balance shows in the header.
+People sign in with **email and password** (Supabase Auth). Magic links are gone: the server no longer offers them and the sign-in screen doesn't send them.
+
+- **Sign up** asks for an email, a password of at least 10 characters (with a strength hint and a show/hide toggle) and the password again. Supabase emails a confirmation link; the account can't be used until it's confirmed. The "Check your email" screen can resend it.
+- **Sign in** says "That email and password don't match" for a wrong password or an unknown address alike, so the form can't be used to find out who has an account. Signing in before confirming offers to resend the confirmation.
+- **Forgot password** emails a reset link that opens a **Set a new password** screen. Like sign-in, it answers the same way whether or not the address has an account.
+- The browser uses Supabase's **PKCE** flow: an email link carries a one-time code that only the browser that asked for it can turn into a session. Opened in another browser, a confirmation link still confirms the email and the page asks you to sign in; a reset link asks you to open it where you requested it, or to send a new one.
+- The server still checks every access token with Supabase and refuses accounts whose email isn't confirmed (403 "Confirm your email address").
+
+Each new account gets **2 free credits**. **1 credit = one research run plus up to 3 drafts or revisions for that person.** A research run that fails is refunded automatically. The balance shows in the header.
 
 Abuse limits are enforced in the database:
 
@@ -61,9 +69,13 @@ The browser never sees raw API errors; details go to the server log.
 
 Each account has a **Profile** page (account menu > Your profile):
 
-- **About you**, a default **channel** and **word limit**, and **writing samples** (up to 10; at least 2 recommended). New outreach starts from these. Changing them for one message doesn't touch the profile unless you choose **Save these details to your profile**.
+- **Main goal**, **about you**, a default **channel** and **word limit**, and **writing samples** (up to 10; at least 2 recommended). New outreach starts from these. Changing them for one message doesn't touch the profile unless you choose **Save these details to your profile**.
 - **Resume**: upload a PDF or Word (.docx) file, up to 5 MB. The server checks the file's contents (not just its name), extracts the text with pypdf / python-docx, and stores the file in a private Supabase Storage bucket. The extracted text is shown so you can correct it. Files are never executed, rendered or served back. Drafts get an excerpt of the resume text (about 6,000 characters) with an instruction to use only details that help that particular message.
 - **Delete my account and data** removes the profile, writing samples, resume file, projects and credit history. A hash of the email address is kept so a new sign-up with the same address doesn't get the free credits again.
+
+**Onboarding.** After the first sign-in, a three-step setup comes before the Desk: your **main goal** with Sociai (reach professors or researchers, find a job or internship, raise money or find investors, sales or partnerships, networking, or something else, plus your own words), **about you** (a few lines and/or a resume, read the same way as on the Profile page), and **writing samples** (one to three). Each step saves when you continue, and any step can be skipped, as can the whole setup. It shows once per account (`profiles.onboarded_at`); while something was skipped, the Desk shows a "Finish setting up your profile" note. Everything stays editable on the Profile page, main goal included.
+
+**New outreach starts from the profile:** the main goal picks the purpose and fills in the ask (your own words if you gave them, otherwise the purpose's suggested ask), along with your background, writing samples and default format. Drafts use your saved resume text, as before.
 
 **Projects are saved to the account**, not the browser: the request, research, your corrections, chosen threads and every draft version. They save as you work (unsaved edits wait in the browser until the server has them), the Desk lists them newest first with search, and opening one in any browser restores it exactly. Projects created before this change are offered for import on first sign-in.
 
@@ -83,20 +95,27 @@ Checkout and the portal are Stripe-hosted pages; Sociai never sees card details.
 ## Supabase setup
 
 1. **Create a project** at [supabase.com/dashboard](https://supabase.com/dashboard) (**New project**).
-2. **Email sign-in**: **Authentication > Sign In / Providers > Email**. Make sure Email is enabled and **Confirm email** is on.
+2. **Email and password sign-in**: **Authentication > Sign In / Providers > Email** (click **Email** to open its settings):
+   - **Enable Email provider**: on. This is what allows email + password sign-in.
+   - **Confirm email**: on.
+   - **Minimum password length**: `10`.
+   - **Password requirements**: leave at "No required characters" (the sign-up screen shows a strength hint instead), or tighten it if you like.
+   - **Save**. Under **User Signups** on the same page, **Allow new users to sign up** must be on.
 3. **Redirect URLs**: **Authentication > URL Configuration**.
    - Site URL: your Render URL (e.g. `https://sociai.onrender.com`), or `http://localhost:8000` while you only run locally.
-   - Redirect URLs: add `http://localhost:8000/**` and `https://<your-app>.onrender.com/**`.
+   - Redirect URLs: add `http://localhost:8000/**` and `https://<your-app>.onrender.com/**`. Those wildcards cover the two pages email links return to; you can also add them exactly: `http://localhost:8000/?auth=confirmed` (email confirmation) and `http://localhost:8000/?auth=reset` (password reset), plus the same two with your Render URL. A link whose address isn't allowed is sent to the Site URL instead (the page still recognises a reset link there).
+   - Optional, for links that work in any browser: in **Authentication > Emails > Templates**, change the link in **Confirm signup** to `{{ .SiteURL }}/?token_hash={{ .TokenHash }}&type=email` and in **Reset Password** to `{{ .SiteURL }}/?token_hash={{ .TokenHash }}&type=recovery`. The page accepts both kinds of link.
 4. **Email delivery**: Supabase's built-in email service only sends to your project's team members, at a very low rate. For testers, set up your own SMTP provider (Resend, Postmark, SendGrid...) under **Authentication > Emails > SMTP Settings**, then raise the email limit under **Authentication > Rate Limits**.
-5. **Run the migrations, in order.** Either:
-   - **SQL Editor > New query**: paste and **Run** `supabase/migrations/20261101000000_accounts_and_credits.sql`, then do the same with `supabase/migrations/20261102000000_profiles_and_history.sql`; or
+5. **Run the migrations, in order** (oldest first). Either:
+   - **SQL Editor > New query**: paste and **Run** each file in `supabase/migrations/`, in the order of the table below; or
    - with the Supabase CLI: `npx supabase login`, `npx supabase link --project-ref <your-project-ref>`, then `npx supabase db push` (it runs whichever haven't run yet).
 
    | Migration | Creates |
    | --- | --- |
    | `20261101000000_accounts_and_credits.sql` | `profiles` (credits), `credit_ledger`, `jobs`, the free-credit trigger and the credit functions |
-   | `20261103000000_payments.sql` | `stripe_customer_id` on `profiles`, and the functions that grant credits once per Stripe event and show the Account page |
    | `20261102000000_profiles_and_history.sql` | profile fields on `profiles` (background, default channel and word limit, resume text), `writing_samples`, `projects`, `deleted_accounts`, the private **`resumes`** Storage bucket (5 MB, PDF/DOCX only) and its per-user-folder policies |
+   | `20261103000000_payments.sql` | `stripe_customer_id` on `profiles`, and the functions that grant credits once per Stripe event and show the Account page |
+   | `20261104000000_onboarding.sql` | `main_goal`, `main_goal_note` and `onboarded_at` on `profiles` (users may change only their own), and the onboarding functions. People who already used Sociai are marked as onboarded, so they don't see the setup |
 
    Then check **Storage**: a bucket named `resumes` should be listed as private. If your project doesn't let SQL create buckets, create it by hand (**Storage > New bucket**, name `resumes`, public off, 5 MB limit, allowed types `application/pdf` and `application/vnd.openxmlformats-officedocument.wordprocessingml.document`) then run just the storage section at the end of that migration (from the `insert into storage.buckets` line down) so the per-user policies exist.
 6. **Keys**: **Project Settings > API Keys** gives the publishable (anon) key and the secret (service_role) key; the project URL is under **Project Settings > Data API**. Put them in `.env` locally and in Render's environment.
@@ -202,13 +221,15 @@ Things to know:
 - `supabase/migrations/`: database tables, row-level security, credit functions, and the resumes Storage bucket.
 - `.env.example`: every setting, with comments.
 - `render.yaml`: Render deploy blueprint.
-- `sociai/static/`: the web app (plain HTML, CSS and ES modules, no build step; supabase-js comes from a pinned CDN URL). Projects are saved in the browser's localStorage, per account.
+- `sociai/static/`: the web app (plain HTML, CSS and ES modules, no build step; supabase-js comes from a pinned CDN URL). `auth.js` holds the Supabase sign-in calls.
 - `examples/`: the student-to-professor demo, with two writing samples.
 
 ## Web app
 
-- **Desk**: start new outreach ("Who would you like to reach out to?") and pick up anything saved in your account. New outreach starts from your profile.
-- **Profile**: your background, default format, writing samples and resume, plus account deletion.
+- **Sign in / Create account / Forgot password**: email and password, with email confirmation and reset links.
+- **Welcome** (first sign-in only): main goal, background and resume, writing samples. Every step can be skipped.
+- **Desk**: start new outreach ("Who would you like to reach out to?") and pick up anything saved in your account. New outreach starts from your profile and main goal.
+- **Profile**: your main goal, background, default format, writing samples and resume, plus account deletion.
 - **Pricing** and **Account**: buy credits or the monthly plan, see purchases and credit activity, manage the subscription.
 - **Research**: a live map of the real searches and page reads the server reports, plus a timestamped field log.
 - **Review**: cited facts (each with a source card), recent work, cautions, and threads to choose. Your corrections are marked as yours and sent to the draft step.
