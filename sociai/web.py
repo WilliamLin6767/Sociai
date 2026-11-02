@@ -87,6 +87,14 @@ CONTACT_PATH = re.compile(r"^/api/contacts/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-
 MAX_CONTACTS = 2000  # the database caps each account at this many
 PAGES = {"/": "landing.html", "/app": "app.html", "/privacy": "privacy.html", "/terms": "terms.html"}
 REDIRECTS = {"/app/": "/app", "/index.html": "/"}
+# Cloudflare (in front of the site) turns static files' Cache-Control into a 4-hour browser cache, so
+# after a deploy a browser could pair new HTML with an old stylesheet. Pages and modules therefore
+# link their CSS and JS as /file?v=<hash of all of them>: every deploy that changes one changes all
+# the URLs, and a versioned file can be cached for good. Anything else is served with no-cache.
+ASSET_VERSION = hashlib.sha256(b"".join(p.read_bytes() for p in sorted(STATIC.glob("*")) if p.suffix in (".css", ".js"))).hexdigest()[:12]
+PAGE_ASSET = re.compile(r'((?:href|src)="/[\w.-]+\.(?:css|js))"')  # <link href="/sociai.css">, <script src="/app.js">
+MODULE_IMPORT = re.compile(r'(from\s+"\./[\w.-]+\.js)"')      # import ... from "./store.js"
+IMMUTABLE = "public, max-age=31536000, immutable"
 # Links that belong to the app but may still arrive at / : email links sent before the app moved
 # to /app (or sent to Supabase's Site URL) and Stripe Checkout sessions started before the move.
 APP_QUERY = ("auth", "code", "token_hash", "error_description", "checkout")
@@ -251,6 +259,8 @@ JOB_ROUTES = {"/api/research": (research_work, "research"), "/api/draft": (draft
 # ───────── HTTP ─────────
 
 class Handler(BaseHTTPRequestHandler):
+    body_read = False  # set once this request's body has been read (one request per connection)
+
     def do_GET(self):
         url = urlparse(self.path)
         if url.path == "/healthz":
@@ -267,7 +277,12 @@ class Handler(BaseHTTPRequestHandler):
         ctype = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
         if ctype.startswith("text/") or ctype.endswith("javascript"):
             ctype += "; charset=utf-8"
-        self._send(200, path.read_bytes(), ctype)
+        body = path.read_bytes()
+        if path.suffix in (".html", ".js"):
+            body = (PAGE_ASSET if path.suffix == ".html" else MODULE_IMPORT).sub(
+                rf'\1?v={ASSET_VERSION}"', body.decode()).encode()
+        versioned = path.suffix in (".css", ".js") and parse_qs(url.query).get("v") == [ASSET_VERSION]
+        self._send(200, body, ctype, cache=IMMUTABLE if versioned else "no-cache")
 
     def do_POST(self):
         self._api(self._post_api, urlparse(self.path))
@@ -651,6 +666,7 @@ class Handler(BaseHTTPRequestHandler):
         return self.client_address[0]
 
     def _read_raw(self, limit, too_big="That request is too large. Try shorter writing samples."):
+        self.body_read = True
         try:
             length = int(self.headers["Content-Length"])
         except (TypeError, ValueError):
@@ -683,16 +699,36 @@ class Handler(BaseHTTPRequestHandler):
     def _json(self, code, obj):
         self._send(code, json.dumps(obj).encode(), "application/json")
 
+    def _drain(self):
+        """Read a body no one read (e.g. a request refused with 401 before it was parsed). Closing the
+        connection with it unread can reset it, and the client would lose the reply."""
+        if self.body_read:
+            return
+        self.body_read = True
+        try:
+            left = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            return
+        if left > DRAIN_LIMIT:
+            return
+        while left > 0:
+            chunk = self.rfile.read(min(left, 65536))
+            if not chunk:
+                break
+            left -= len(chunk)
+
     def _redirect(self, location):
+        self._drain()
         self.send_response(302)
         self.send_header("Location", location)
         self.send_header("Content-Length", "0")
         self.end_headers()
 
-    def _send(self, code, body, ctype):
+    def _send(self, code, body, ctype, cache="no-cache"):
+        self._drain()
         self.send_response(code)
         self.send_header("Content-Type", ctype)
-        self.send_header("Cache-Control", "no-cache")
+        self.send_header("Cache-Control", cache)
         self.end_headers()
         self.wfile.write(body)
 

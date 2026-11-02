@@ -157,41 +157,50 @@ const setPref = (k, v) => { try { localStorage.setItem(k, v); } catch {} };
 const STATUS_ORDER = Object.fromEntries(STATUSES.map(([k], i) => [k, i]));
 const COLUMNS = [["name", "Name"], ["role", "Role"], ["organization", "Organization"], ["subject", "Subject"],
   ["sent_at", "Sent"], ["shown_status", "Status"], ["follow_up_at", "Follow up"]];
+const CAL_MODES = [["month", "Month"], ["week", "Week"], ["agenda", "Agenda"]];
+const chevron = (d) => `<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="${d}"/></svg>`;
+const CHEV_LEFT = chevron("M10 3.5 5.5 8l4.5 4.5"), CHEV_RIGHT = chevron("M6 3.5 10.5 8 6 12.5");
+const monthOf = (s) => s.slice(0, 7);
+const LONG_DAY = { weekday: "long", month: "long", day: "numeric" };
 
 export function trackerView() {
   const { esc } = ctx;
   const main = document.getElementById("main");
-  const now = new Date();
   const st = {
-    mode: pref("sociai.trackerView", "table"), sort: "created_at", dir: -1, status: "", role: "", q: "",
-    month: new Date(now.getFullYear(), now.getMonth(), 1), day: todayISO(), loaded: false, error: "",
+    mode: pref("sociai.trackerView", "table"), cal: pref("sociai.calendarView", "month"),
+    sort: "created_at", dir: -1, status: "", role: "", q: "", day: todayISO(), loaded: false, error: "",
   };
-  main.innerHTML = `<div class="page tracker">
-    <header class="tr-head">
-      <div><p class="label">Outreach</p><h1 class="h2" data-focus-on-enter>Tracker</h1>
-        <p class="field-hint">Who you've written to, and when to follow up. You add people here yourself. Nothing reads your inbox or uses credits.</p></div>
-      <button type="button" class="btn btn-primary" data-act="tr-add">Add contact</button>
-    </header>
-    <section class="tr-due" id="tr-due" aria-labelledby="tr-due-title"></section>
-    <div class="tr-switch choices" role="group" aria-label="View">
-      <button type="button" class="choice choice-sm" data-act="tr-mode" data-mode="table">Table</button>
-      <button type="button" class="choice choice-sm" data-act="tr-mode" data-mode="calendar">Calendar</button>
-    </div>
-    <div id="tr-view"><p class="opening" role="status">Loading your tracker…</p></div>
-  </div>`;
+  main.innerHTML = `<div class="ruled"><div class="page tracker">
+    <div class="row tr-lead"><div class="margin"><p class="label">Outreach</p></div>
+      <div class="col tr-title">
+        <div><h1 class="h2" data-focus-on-enter>Tracker</h1>
+          <p class="field-hint">Who you've written to, and when to follow up. You add people here yourself; nothing reads your inbox or uses credits.</p></div>
+        <button type="button" class="btn btn-primary" data-act="tr-add">Add contact</button>
+      </div></div>
+    <section class="row tr-section" aria-labelledby="tr-due-title">
+      <div class="margin"><h2 class="label" id="tr-due-title"><span class="n">01</span>&nbsp; Due soon</h2><p class="margin-note">Follow-ups in the next 7 days, and any overdue.</p></div>
+      <div class="col" style="max-width:none"><div class="tr-card tr-due" id="tr-due"></div></div></section>
+    <section class="row tr-section" aria-labelledby="tr-contacts-title">
+      <div class="margin"><h2 class="label" id="tr-contacts-title"><span class="n">02</span>&nbsp; Contacts</h2><p class="margin-note" id="tr-note"></p></div>
+      <div class="col" style="max-width:none">
+        <div class="choices tr-switch" role="group" aria-label="Show contacts as">
+          <button type="button" class="choice" data-act="tr-mode" data-mode="table"><span class="k" aria-hidden="true"></span>Table</button>
+          <button type="button" class="choice" data-act="tr-mode" data-mode="calendar"><span class="k" aria-hidden="true"></span>Calendar</button>
+        </div>
+        <div id="tr-view"><p class="opening" role="status">Loading your tracker…</p></div>
+      </div></section>
+  </div></div>`;
   const $ = (s) => main.querySelector(s);
 
   // ── Due soon ──
   const drawDue = () => {
     const due = contacts.filter((c) => c.due_in !== null).sort((a, b) => a.due_in - b.due_in);
-    $("#tr-due").innerHTML = `<div class="tr-due-head"><h2 class="label" id="tr-due-title">Due soon</h2>
-        <span class="tr-due-count">${due.length ? `${due.length} follow-up${due.length === 1 ? "" : "s"} in the next 7 days or overdue` : ""}</span></div>
-      ${due.length ? `<ul class="tr-due-list">${due.map((c) => `<li class="tr-due-item${c.due_in < 0 ? " is-overdue" : ""}">
-          <button type="button" class="tr-due-who" data-act="tr-edit" data-id="${c.id}"><b>${esc(c.name)}</b>${c.organization ? `<span>${esc(c.organization)}</span>` : ""}</button>
-          <span class="tr-due-when">${dueText(c.due_in)} · ${fmtDate(c.follow_up_at, { weekday: "short", month: "short", day: "numeric" })}</span>
-          <span class="tr-due-acts"><button type="button" class="btn btn-line btn-sm" data-act="tr-replied" data-id="${c.id}">Mark replied</button></span>
-        </li>`).join("")}</ul>`
-        : `<p class="tr-due-empty">${st.loaded ? "Nothing due in the next 7 days." : ""}</p>`}`;
+    $("#tr-due").innerHTML = due.length ? `<ul class="tr-due-list">${due.map((c) => `<li class="tr-due-item${c.due_in < 0 ? " is-overdue" : ""}">
+        <button type="button" class="tr-due-who" data-act="tr-edit" data-id="${c.id}"><b>${esc(c.name)}</b>${c.organization ? `<span>${esc(c.organization)}</span>` : ""}</button>
+        <span class="tr-due-when">${dueText(c.due_in)} · ${fmtDate(c.follow_up_at, { weekday: "short", month: "short", day: "numeric" })}</span>
+        <button type="button" class="btn btn-line btn-sm" data-act="tr-replied" data-id="${c.id}">Mark replied</button>
+      </li>`).join("")}</ul>`
+      : `<p class="tr-quiet">${st.loaded ? "Nothing due in the next 7 days." : "…"}</p>`;
   };
 
   // ── Table ──
@@ -209,18 +218,18 @@ export function trackerView() {
       return (typeof x === "number" ? x - y : String(x).localeCompare(String(y), undefined, { sensitivity: "base" })) * st.dir;
     });
   };
+  const select = (id, text, all, list, v) => `<label class="vh" for="${id}">${text}</label><select class="input input-sm" id="${id}">
+    <option value="">${all}</option>${list.map(([k, l]) => `<option value="${k}"${k === v ? " selected" : ""}>${l}</option>`).join("")}</select>`;
   const drawTable = () => {
     $("#tr-view").innerHTML = `<div class="tr-tools">
-        <label class="vh" for="tr-q">Search contacts</label><input class="input input-sm tr-q" id="tr-q" type="search" placeholder="Search" value="${esc(st.q)}" autocomplete="off">
-        <label class="vh" for="tr-f-status">Filter by status</label><select class="input input-sm" id="tr-f-status"><option value="">All statuses</option>${STATUSES.map(([k, l]) => `<option value="${k}"${k === st.status ? " selected" : ""}>${l}</option>`).join("")}</select>
-        <label class="vh" for="tr-f-role">Filter by role</label><select class="input input-sm" id="tr-f-role"><option value="">All roles</option>${ROLES.map(([k, l]) => `<option value="${k}"${k === st.role ? " selected" : ""}>${l}</option>`).join("")}</select>
-        <span class="tr-count" id="tr-count" aria-live="polite"></span>
+        <label class="search"><span class="vh">Search contacts</span>${ctx.icons.search}<input class="input" id="tr-q" type="search" placeholder="Search name, email, organization" value="${esc(st.q)}" autocomplete="off"></label>
+        <div class="tr-selects">${select("tr-f-status", "Filter by status", "All statuses", STATUSES, st.status)}${select("tr-f-role", "Filter by role", "All roles", ROLES, st.role)}</div>
       </div><div id="tr-table"></div>`;
     drawRows();
   };
   const drawRows = () => {
     const rows = shown();
-    $("#tr-count").textContent = `${rows.length} of ${contacts.length}`;
+    $("#tr-note").textContent = !contacts.length ? "" : rows.length === contacts.length ? `${contacts.length} in your tracker.` : `${rows.length} of ${contacts.length} shown.`;
     if (!contacts.length) {
       $("#tr-table").innerHTML = `<p class="empty">No one here yet. Add someone you've written to, or press "Track this" under a draft.</p>`;
       return;
@@ -244,10 +253,10 @@ export function trackerView() {
       </tr>`).join("")}</tbody></table></div>`;
   };
 
-  // ── Calendar ──
+  // ── Calendar: month, week and agenda, all around one selected day (st.day) ──
   const events = () => {
     const by = {};
-    const add = (d, kind, c) => d && (by[d] ||= []).push({ kind, c });
+    const add = (d, kind, c) => d && (by[d] ||= []).push({ kind, c, overdue: kind === "follow" && c.due_in !== null && c.due_in < 0 });
     for (const c of contacts) {
       add(c.sent_at, "sent", c);
       add(c.replied_at, "replied", c);
@@ -255,47 +264,89 @@ export function trackerView() {
     }
     return by;
   };
-  const drawCalendar = (focus = false) => {
-    const by = events(), today = todayISO();
-    const y = st.month.getFullYear(), m = st.month.getMonth();
-    const start = new Date(y, m, 1 - new Date(y, m, 1).getDay()); // the Sunday on or before the 1st
-    const weeks = Math.ceil((new Date(y, m, 1).getDay() + new Date(y, m + 1, 0).getDate()) / 7);
-    if (st.day.slice(0, 7) !== iso(st.month).slice(0, 7)) st.day = today.slice(0, 7) === iso(st.month).slice(0, 7) ? today : iso(st.month);
-    const days = Array.from({ length: weeks * 7 }, (_, i) => iso(new Date(start.getFullYear(), start.getMonth(), start.getDate() + i)));
-    const names = Array.from({ length: 7 }, (_, i) => new Date(2026, 10, 1 + i).toLocaleDateString(undefined, { weekday: "short" }));
-    const chip = (e) => `<span class="cal-chip is-${e.kind}${e.kind === "follow" && e.c.due_in !== null && e.c.due_in < 0 ? " is-overdue" : ""}"><i aria-hidden="true"></i><span>${esc(e.c.name)}</span></span>`;
-    $("#tr-view").innerHTML = `<div class="cal">
-      <div class="cal-head">
-        <button type="button" class="icon-btn" data-act="cal-prev" aria-label="Previous month">${ctx.icons.back}</button>
-        <h2 class="h3 cal-title" aria-live="polite">${st.month.toLocaleDateString(undefined, { month: "long", year: "numeric" })}</h2>
-        <button type="button" class="icon-btn" data-act="cal-next" aria-label="Next month">${ctx.icons.arrow}</button>
-        <button type="button" class="btn btn-line btn-sm" data-act="cal-today">Today</button>
-        <span class="cal-legend" aria-hidden="true"><span class="cal-chip is-sent"><i></i>Sent</span><span class="cal-chip is-replied"><i></i>Replied</span><span class="cal-chip is-follow"><i></i>Follow up</span></span>
-      </div>
-      <div class="cal-grid" role="grid" aria-label="${st.month.toLocaleDateString(undefined, { month: "long", year: "numeric" })}">
-        <div class="cal-row" role="row">${names.map((n) => `<span class="cal-dow" role="columnheader">${n}</span>`).join("")}</div>
-        ${Array.from({ length: weeks }, (_, w) => `<div class="cal-row" role="row">${days.slice(w * 7, w * 7 + 7).map((d) => {
-          const ev = by[d] || [], out = d.slice(0, 7) !== iso(st.month).slice(0, 7);
-          const desc = ev.length ? `, ${ev.length} item${ev.length === 1 ? "" : "s"}` : "";
-          return `<button type="button" role="gridcell" class="cal-day${out ? " is-out" : ""}${d === today ? " is-today" : ""}${d === st.day ? " is-selected" : ""}"
-              data-act="cal-day" data-date="${d}" tabindex="${d === st.day ? 0 : -1}" aria-selected="${d === st.day}"
-              aria-label="${fmtDate(d, { weekday: "long", month: "long", day: "numeric" })}${d === today ? ", today" : ""}${desc}">
-            <span class="cal-n">${parseISO(d).getDate()}</span>
-            <span class="cal-chips">${ev.slice(0, 3).map(chip).join("")}${ev.length > 3 ? `<span class="cal-more">+${ev.length - 3}</span>` : ""}</span></button>`;
-        }).join("")}</div>`).join("")}
-      </div>
-      <section class="cal-agenda" aria-live="polite" id="cal-agenda"></section></div>`;
-    drawAgenda(by);
-    if (focus) $(".cal-day.is-selected")?.focus();
+  const kindClass = (e) => `is-${e.overdue ? "overdue" : e.kind}`;
+  const pill = (e) => `<button type="button" class="cal-pill ${kindClass(e)}" data-act="tr-edit" data-id="${e.c.id}"
+      aria-label="${KIND_LABEL[e.kind]}${e.overdue ? " (overdue)" : ""}: ${esc(e.c.name)}. Edit" title="${KIND_LABEL[e.kind]}: ${esc(e.c.name)}">${esc(e.c.name)}</button>`;
+  const dayButton = (d, today, inner, cls = "cal-n") => `<button type="button" class="${cls}" data-act="cal-day" data-date="${d}" tabindex="${d === st.day ? 0 : -1}"
+      aria-label="${fmtDate(d, LONG_DAY)}${d === today ? ", today" : ""}" aria-pressed="${d === st.day}">${inner}</button>`;
+  const weekOf = (s) => { const d = parseISO(s); return addDays(s, -d.getDay()); }; // the Sunday it falls in
+  const dowNames = Array.from({ length: 7 }, (_, i) => new Date(2026, 10, 1 + i).toLocaleDateString(undefined, { weekday: "short" }));
+
+  const calTitle = () => {
+    if (st.cal !== "week") return parseISO(st.day).toLocaleDateString(undefined, { month: "long", year: "numeric" });
+    const a = parseISO(weekOf(st.day)), b = parseISO(addDays(weekOf(st.day), 6));
+    const same = a.getMonth() === b.getMonth();
+    return `${a.toLocaleDateString(undefined, { month: "short", day: "numeric" })} – ${b.toLocaleDateString(undefined, same ? { day: "numeric" } : { month: "short", day: "numeric" })}, ${b.getFullYear()}`;
   };
-  const drawAgenda = (by = events()) => {
-    const ev = by[st.day] || [];
-    $("#cal-agenda").innerHTML = `<h3 class="label">${fmtDate(st.day, { weekday: "long", month: "long", day: "numeric" })}</h3>
-      ${ev.length ? `<ul class="cal-items">${ev.map((e) => `<li><button type="button" class="cal-item" data-act="tr-edit" data-id="${e.c.id}">
-          <span class="cal-chip is-${e.kind}${e.kind === "follow" && e.c.due_in !== null && e.c.due_in < 0 ? " is-overdue" : ""}"><i aria-hidden="true"></i>${KIND_LABEL[e.kind]}</span>
-          <b>${esc(e.c.name)}</b>${e.c.organization ? `<span class="tr-sub">${esc(e.c.organization)}</span>` : ""}
-          ${e.c.subject ? `<span class="tr-sub">${esc(e.c.subject)}</span>` : ""}</button></li>`).join("")}</ul>`
-        : `<p class="tr-due-empty">Nothing on this day.</p>`}`;
+  const monthHTML = (by, today) => {
+    const first = `${monthOf(st.day)}-01`, start = weekOf(first);
+    const last = parseISO(first); last.setMonth(last.getMonth() + 1, 0);
+    const weeks = Math.ceil((parseISO(first).getDay() + last.getDate()) / 7);
+    return `<div class="cal-dows" aria-hidden="true">${dowNames.map((n) => `<span>${n}</span>`).join("")}</div>
+      <div class="cal-month" style="--weeks:${weeks}">${Array.from({ length: weeks * 7 }, (_, i) => {
+        const d = addDays(start, i), ev = by[d] || [];
+        return `<div class="cal-cell${monthOf(d) !== monthOf(st.day) ? " is-out" : ""}${d === today ? " is-today" : ""}${d === st.day ? " is-selected" : ""}" data-date="${d}">
+          ${dayButton(d, today, parseISO(d).getDate())}
+          <div class="cal-pills">${ev.slice(0, 3).map(pill).join("")}${ev.length > 3 ? `<button type="button" class="cal-more" data-act="cal-day" data-date="${d}" tabindex="-1">+${ev.length - 3} more</button>` : ""}</div>
+        </div>`;
+      }).join("")}</div>`;
+  };
+  const weekHTML = (by, today) => `<div class="cal-week">${Array.from({ length: 7 }, (_, i) => {
+      const d = addDays(weekOf(st.day), i), ev = by[d] || [];
+      return `<div class="cal-wday${d === today ? " is-today" : ""}${d === st.day ? " is-selected" : ""}" data-date="${d}">
+        ${dayButton(d, today, `<span class="cal-dow">${dowNames[i]}</span><span class="cal-n-big">${parseISO(d).getDate()}</span>`, "cal-whead")}
+        <div class="cal-pills">${ev.map(pill).join("") || '<span class="cal-none">No items</span>'}</div></div>`;
+    }).join("")}</div>`;
+  const itemsHTML = (ev) => `<ul class="cal-items">${ev.map((e) => `<li><button type="button" class="cal-item" data-act="tr-edit" data-id="${e.c.id}">
+      <span class="cal-tag ${kindClass(e)}">${KIND_LABEL[e.kind]}${e.overdue ? ", overdue" : ""}</span>
+      <span class="cal-item-text"><b>${esc(e.c.name)}</b>${e.c.organization ? `<span class="tr-sub">${esc(e.c.organization)}</span>` : ""}${e.c.subject ? `<span class="tr-sub">${esc(e.c.subject)}</span>` : ""}</span>
+    </button></li>`).join("")}</ul>`;
+  const agendaHTML = (by, today) => {
+    const days = Object.keys(by).filter((d) => monthOf(d) === monthOf(st.day)).sort();
+    if (!days.length) return `<p class="empty">Nothing in ${esc(calTitle())}.</p>`;
+    return `<ol class="cal-agenda">${days.map((d) => `<li class="cal-aday${d === today ? " is-today" : ""}">
+        <span class="cal-adate"><span class="cal-dow">${parseISO(d).toLocaleDateString(undefined, { weekday: "short" })}</span><span class="cal-n-big">${parseISO(d).getDate()}</span></span>
+        ${itemsHTML(by[d])}</li>`).join("")}</ol>`;
+  };
+  const sideHTML = (by) => `<h3 class="label">${fmtDate(st.day, LONG_DAY)}</h3>
+    ${by[st.day]?.length ? itemsHTML(by[st.day]) : '<p class="tr-quiet">Nothing on this day.</p>'}`;
+
+  const drawCalendar = (focus = false) => {
+    const by = events(), today = todayISO(), unit = st.cal === "week" ? "week" : "month";
+    $("#tr-note").textContent = "Sent dates, replies and follow-ups. Click a name to edit it.";
+    $("#tr-view").innerHTML = `<div class="cal">
+      <div class="cal-bar">
+        <button type="button" class="btn btn-line btn-sm" data-act="cal-today">Today</button>
+        <span class="cal-arrows"><button type="button" class="icon-btn" data-act="cal-prev" aria-label="Previous ${unit}" title="Previous ${unit}">${CHEV_LEFT}</button><button type="button" class="icon-btn" data-act="cal-next" aria-label="Next ${unit}" title="Next ${unit}">${CHEV_RIGHT}</button></span>
+        <h3 class="cal-title" aria-live="polite">${esc(calTitle())}</h3>
+        <div class="seg" role="group" aria-label="Calendar view">${CAL_MODES.map(([k, l]) => `<button type="button" data-act="cal-mode" data-mode="${k}" aria-pressed="${st.cal === k}">${l}</button>`).join("")}</div>
+      </div>
+      <div class="cal-legend"><span><i class="is-sent"></i>Sent</span><span><i class="is-replied"></i>Replied</span><span><i class="is-follow"></i>Follow up</span><span><i class="is-overdue"></i>Overdue</span></div>
+      <div class="cal-body is-${st.cal}">
+        <div class="cal-main">${st.cal === "agenda" ? agendaHTML(by, today) : st.cal === "week" ? weekHTML(by, today) : monthHTML(by, today)}</div>
+        ${st.cal === "agenda" ? "" : `<aside class="tr-card cal-side" aria-live="polite" aria-label="Selected day">${sideHTML(by)}</aside>`}
+      </div></div>`;
+    if (focus) $(".cal-main [data-act='cal-day'][aria-pressed='true']")?.focus();
+  };
+  const selectDay = (d) => {
+    const moved = st.cal === "week" ? weekOf(d) !== weekOf(st.day) : monthOf(d) !== monthOf(st.day);
+    st.day = d;
+    if (moved) return drawCalendar(true);
+    main.querySelectorAll(".cal-main [data-date]").forEach((el) => {
+      const on = el.dataset.date === d;
+      if (el.matches(".cal-cell, .cal-wday")) el.classList.toggle("is-selected", on);
+      if (el.matches("[data-act='cal-day']:not(.cal-more)")) { el.tabIndex = on ? 0 : -1; el.setAttribute("aria-pressed", on); }
+    });
+    $(".cal-side").innerHTML = sideHTML(events());
+  };
+  // Previous / next: a month (month and agenda) or a week. A month step lands on the 1st, or today in this month.
+  const step = (n) => {
+    if (st.cal === "week") st.day = addDays(st.day, 7 * n);
+    else {
+      const d = parseISO(`${monthOf(st.day)}-01`); d.setMonth(d.getMonth() + n);
+      st.day = monthOf(iso(d)) === monthOf(todayISO()) ? todayISO() : iso(d);
+    }
+    drawCalendar();
   };
 
   const drawView = () => {
@@ -315,10 +366,13 @@ export function trackerView() {
   load().then(() => { st.loaded = true; }, (e) => { st.error = e.message; })
     .finally(() => { if (alive) { drawDue(); drawView(); } });
 
-  const moveMonth = (n) => { st.month = new Date(st.month.getFullYear(), st.month.getMonth() + n, 1); drawCalendar(); };
   main.addEventListener("click", (e) => {
     const a = e.target.closest("[data-act]");
-    if (!a) return;
+    if (!a) {
+      const cell = e.target.closest(".cal-cell, .cal-wday"); // a click on a day's empty space selects it
+      if (cell) selectDay(cell.dataset.date);
+      return;
+    }
     const act = a.dataset.act, c = contacts.find((x) => x.id === a.dataset.id);
     if (act === "tr-add") openContactEditor(null, { onSaved: (x) => ctx.toast(`${x.name} was added to your tracker.`) });
     else if (act === "tr-edit" && c) openContactEditor(c);
@@ -331,15 +385,11 @@ export function trackerView() {
       drawRows();
       $(`[data-act='tr-sort'][data-k='${k}']`)?.focus();
     }
-    else if (act === "cal-prev") moveMonth(-1);
-    else if (act === "cal-next") moveMonth(1);
-    else if (act === "cal-today") { const t = new Date(); st.month = new Date(t.getFullYear(), t.getMonth(), 1); st.day = todayISO(); drawCalendar(true); }
-    else if (act === "cal-day") {
-      st.day = a.dataset.date;
-      if (a.classList.contains("is-out")) { const d = parseISO(st.day); st.month = new Date(d.getFullYear(), d.getMonth(), 1); return drawCalendar(true); }
-      main.querySelectorAll(".cal-day").forEach((b) => { const on = b === a; b.classList.toggle("is-selected", on); b.tabIndex = on ? 0 : -1; b.setAttribute("aria-selected", on); });
-      drawAgenda();
-    }
+    else if (act === "cal-mode") { st.cal = a.dataset.mode; setPref("sociai.calendarView", st.cal); drawCalendar(); }
+    else if (act === "cal-prev") step(-1);
+    else if (act === "cal-next") step(1);
+    else if (act === "cal-today") { st.day = todayISO(); drawCalendar(true); }
+    else if (act === "cal-day") selectDay(a.dataset.date);
   });
   main.addEventListener("change", (e) => {
     const t = e.target;
@@ -348,16 +398,14 @@ export function trackerView() {
     else if (t.id === "tr-f-role") { st.role = t.value; drawRows(); }
   });
   main.addEventListener("input", (e) => { if (e.target.id === "tr-q") { st.q = e.target.value; drawRows(); } });
-  // Arrow keys move between days; Enter or Space opens one (the button default).
+  // Arrow keys move between days (a week up or down in the month view).
   main.addEventListener("keydown", (e) => {
-    const day = e.target.closest?.(".cal-day");
-    const step = { ArrowLeft: -1, ArrowRight: 1, ArrowUp: -7, ArrowDown: 7 }[e.key];
-    if (!day || !step) return;
+    const day = e.target.closest?.(".cal-main [data-act='cal-day']:not(.cal-more)");
+    const n = { ArrowLeft: -1, ArrowRight: 1, ArrowUp: st.cal === "month" ? -7 : -1, ArrowDown: st.cal === "month" ? 7 : 1 }[e.key];
+    if (!day || !n) return;
     e.preventDefault();
-    st.day = addDays(day.dataset.date, step);
-    const d = parseISO(st.day);
-    if (d.getMonth() !== st.month.getMonth()) st.month = new Date(d.getFullYear(), d.getMonth(), 1);
-    drawCalendar(true);
+    selectDay(addDays(day.dataset.date, n));
+    $(".cal-main [data-act='cal-day'][aria-pressed='true']")?.focus();
   });
   return () => { alive = false; listeners.delete(redraw); };
 }
