@@ -83,7 +83,9 @@ Each account has a **Profile** page (account menu > Your profile):
 
 **Projects are saved to the account**, not the browser: the request, research, your corrections, chosen threads and every draft version. They save as you work (unsaved edits wait in the browser until the server has them), the Desk lists them newest first with search, and opening one in any browser restores it exactly. Projects created before this change are offered for import on first sign-in.
 
-**Privacy:** profiles, writing samples, resume files and their text, and projects are stored in your Supabase project. Row-level security lets each user read and change only their own rows and files.
+**Outreach tracker** (Tracker in the top bar, or account menu > Outreach tracker): people you've written to, entered by hand, with a sortable, filterable table, a month calendar of sent dates, replies and follow-ups, and a **Due soon** panel (follow-ups in the next 7 days or overdue). Marking a contact **sent** sets its follow-up date (professor +30 days, recruiter +7, alum and other +10), which you can change; marking it **replied** clears it. A sent contact whose follow-up date has arrived shows as **Follow-up due**. Under a draft, **Track this** fills in a new contact from the person and the subject. Nothing reads your inbox or sends anything, and tracker actions never use credits. The rules live in `sociai/tracker.py`.
+
+**Privacy:** profiles, writing samples, resume files and their text, projects and tracker contacts are stored in your Supabase project. Row-level security lets each user read and change only their own rows and files.
 
 ## Payments (Stripe)
 
@@ -131,6 +133,8 @@ A key from the other mode (or an unknown mode) turns payments off, and the start
    | `20261102000000_profiles_and_history.sql` | profile fields on `profiles` (background, default channel and word limit, resume text), `writing_samples`, `projects`, `deleted_accounts`, the private **`resumes`** Storage bucket (5 MB, PDF/DOCX only) and its per-user-folder policies |
    | `20261103000000_payments.sql` | `stripe_customer_id` on `profiles`, and the functions that grant credits once per Stripe event and show the Account page |
    | `20261104000000_onboarding.sql` | `main_goal`, `main_goal_note` and `onboarded_at` on `profiles` (users may change only their own), and the onboarding functions. People who already used Sociai are marked as onboarded, so they don't see the setup |
+   | `20261105000000_profile_repair.sql` | repairs accounts whose profile row is missing (with the sign-up rules for free credits) |
+   | `20261106000000_outreach_contacts.sql` | `outreach_contacts` for the outreach tracker, with row-level security (each user sees and changes only their own), an `updated_at` trigger and a cap of 2,000 contacts per account |
 
    Then check **Storage**: a bucket named `resumes` should be listed as private. If your project doesn't let SQL create buckets, create it by hand (**Storage > New bucket**, name `resumes`, public off, 5 MB limit, allowed types `application/pdf` and `application/vnd.openxmlformats-officedocument.wordprocessingml.document`) then run just the storage section at the end of that migration (from the `insert into storage.buckets` line down) so the per-user policies exist.
 6. **Keys**: **Project Settings > API Keys** gives the publishable (anon) key and the secret (service_role) key; the project URL is under **Project Settings > Data API**. Put them in `.env` locally and in Render's environment.
@@ -181,6 +185,12 @@ python -m sociai.web  # open http://localhost:8000
 ```
 
 On startup the server prints which settings it loaded from `.env` (names only, never values). Values in `.env` win over variables already set in Windows, so an old `setx ANTHROPIC_API_KEY` can't shadow the file.
+
+Tests (standard library only, no Supabase or Claude key needed):
+
+```powershell
+python -m unittest discover tests
+```
 
 The command line tools don't need Supabase, only the Claude key:
 
@@ -254,6 +264,7 @@ Do these in order, and test one real purchase with your own card before announci
 - `sociai/config.py`: settings and the `.env` loader. `sociai/supabase.py`: the small Supabase client the server uses.
 - `sociai/disposable_domains.txt`: email domains that can't use the app.
 - `sociai/resume.py`: checks uploaded resumes and extracts their text (PDF, DOCX).
+- `sociai/tracker.py`: the outreach tracker's validation and follow-up rules (tested in `tests/test_tracker.py`).
 - `sociai/billing.py`: Stripe Checkout, the customer portal, webhook verification, and the test/live mode rules.
 - `sociai/monitoring.py`: optional Sentry setup and the scrubbing of events.
 - `supabase/migrations/`: database tables, row-level security, credit functions, and the resumes Storage bucket.
@@ -271,7 +282,8 @@ Do these in order, and test one real purchase with your own card before announci
 - **Pricing** and **Account**: buy credits or the monthly plan, see purchases and credit activity, manage the subscription.
 - **Research**: a live map of the real searches and page reads the server reports, plus a timestamped field log.
 - **Review**: cited facts (each with a source card), recent work, cautions, and threads to choose. Your corrections are marked as yours and sent to the draft step.
-- **Draft**: an editor where placeholders are highlighted inline. Refine tone and length (your edits are kept), regenerate, switch between versions, and copy the message. Nothing is ever sent for you.
+- **Draft**: an editor where placeholders are highlighted inline. Refine tone and length (your edits are kept), regenerate, switch between versions, and copy the message. Nothing is ever sent for you. **Track this** adds the person to the tracker.
+- **Tracker**: the outreach tracker (see Profiles and saved projects): table, calendar and Due soon.
 
 ## Next ideas
 

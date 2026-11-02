@@ -8,6 +8,7 @@ import {
   sendPasswordReset, setPassword, signIn, signOut, signUp, updateUserData, verifyEmailLink,
 } from "./auth.js";
 import { Loom, domain, normUrl } from "./loom.js";
+import { initTracker, openContactEditor, trackerView } from "./tracker.js";
 
 /* ───────── Helpers ───────── */
 
@@ -43,6 +44,7 @@ const I = {
   moon: svg('<path d="M13.5 9.5A5.5 5.5 0 0 1 6.5 2.5a5.5 5.5 0 1 0 7 7z"/>'),
   auto: svg('<circle cx="8" cy="8" r="5.5"/><path d="M8 2.5v11" /><path d="M8 2.5a5.5 5.5 0 0 1 0 11z" fill="currentColor"/>'),
   caret: svg('<path d="m4 10 4-4 4 4"/>'),
+  track: svg('<rect x="2.5" y="3.5" width="11" height="10" rx="1"/><path d="M2.5 6.5h11M5.5 2v3M10.5 2v3"/>'),
 };
 // The logo: two overlapping speech bubbles (forest green and tan) with a spark where they meet.
 const MARK = `<svg class="brand-mark" viewBox="0 0 232 216" aria-hidden="true">
@@ -283,7 +285,8 @@ function toggleAccountMenu(btn) {
   btn.insertAdjacentHTML("afterend", `<div class="menu menu-down" role="menu">
     <p class="menu-head"><span class="label">Signed in as</span><span class="menu-email">${esc(account.email)}</span></p>
     <p class="menu-note">${creditLabel(account.credits)} left. One credit covers a research run plus up to 3 drafts or revisions for that person.</p>
-    <hr><a class="mi" role="menuitem" href="#/profile">Your profile</a>
+    <hr><a class="mi" role="menuitem" href="#/tracker">Outreach tracker</a>
+    <a class="mi" role="menuitem" href="#/profile">Your profile</a>
     <a class="mi" role="menuitem" href="#/account">Account and billing</a>
     <a class="mi" role="menuitem" href="#/pricing">Buy credits</a>
     <hr><button type="button" class="mi" role="menuitem" data-act="sign-out">Sign out</button></div>`);
@@ -690,7 +693,7 @@ function finishDraft(id, r) {
 let view = null; // { route, cleanup }
 
 function parseRoute() {
-  for (const page of ["profile", "pricing", "account"]) if (location.hash.startsWith(`#/${page}`)) return { view: page };
+  for (const page of ["profile", "pricing", "account", "tracker"]) if (location.hash.startsWith(`#/${page}`)) return { view: page };
   const m = location.hash.match(/^#\/p\/([\w-]+)(?:\/(\w+))?/);
   return m ? { view: "project", id: m[1], stage: m[2] } : { view: "desk" };
 }
@@ -812,7 +815,7 @@ function renderBar(route, p) {
       <div id="nav-slot">${threadNav(p, route.stage)}</div>`
       : PAGE_TITLES[route.view] ? `<div class="crumb"><span class="crumb-sep" aria-hidden="true">/</span><span class="crumb-who">${PAGE_TITLES[route.view]}</span></div>`
       : '<div class="crumb"></div>'}
-    <div class="bar-end">${p || route.view === "profile" ? '<span class="saved" id="saved" title="Saved to your account"><span>Saved</span></span>' : ""}${accountButton()}${themeButton()}</div>
+    <div class="bar-end">${p ? "" : `<a class="bar-link" href="#/tracker"${route.view === "tracker" ? ' aria-current="page"' : ""}>${I.track}<span>Tracker</span></a>`}${p || route.view === "profile" ? '<span class="saved" id="saved" title="Saved to your account"><span>Saved</span></span>' : ""}${accountButton()}${themeButton()}</div>
   </div>`;
 }
 
@@ -1807,6 +1810,7 @@ function draftView(p) {
     $("#dock-actions").innerHTML = v ? `
       <div class="refine-menu"><button class="btn btn-ghost" data-act="refine-menu" aria-haspopup="true" aria-expanded="false" ${busy || out ? "disabled" : ""} ${out ? `title="${OUT_OF_DRAFTS}"` : ""}>${I.sparkle}<span>Refine<span class="label-long"> tone &amp; length</span></span></button></div>
       <button class="btn btn-ghost" data-act="regenerate" ${busy || out ? "disabled" : ""} aria-label="Regenerate" title="${out ? OUT_OF_DRAFTS : "Write a fresh draft from your research. This one stays in history."}">${I.redo}<span class="label-long">Regenerate</span></button>
+      <button class="btn btn-ghost" data-act="track" aria-label="Track this: add ${esc(nameOf(q))} to your outreach tracker" title="Add this person to your outreach tracker">${I.track}<span class="label-long">Track this</span></button>
       <button class="btn btn-primary copy-btn" data-act="copy" data-primary><span class="idle">${I.copy} Copy message</span><span class="ok">${svg('<path d="m3 8.5 3 3 7-7"/>')} Copied</span></button>`
       : (q.draft.status === "error" ? `<a class="btn btn-ghost" href="${stageHash(q, "review")}">Back to review</a>` : "");
   };
@@ -1876,6 +1880,7 @@ function draftView(p) {
     else if (act === "regenerate") startDraft(id, { label: "Regenerated" });
     else if (act === "retry-draft") { startDraft(id, { label: currentVersion(get()) ? "Regenerated" : "First draft" }); }
     else if (act === "copy") doCopy(a, a.dataset.force === "1");
+    else if (act === "track") trackDraft(get());
     else if (act === "show-ph") { ui.confirmCopy = false; drawDock(); jumpTo(placeholders(currentVersion(get()).body)[0]); }
     else if (act === "copy-subject") copyText(currentVersion(get()).subject).then((ok) => toast(ok ? "Subject copied." : "Couldn't reach the clipboard."));
     else if (act === "version") {
@@ -2401,8 +2406,23 @@ function handleCheckoutReturn() {
 
 const OUT_OF_DRAFTS = "No drafts left with this research. Re-running the research (1 credit) adds 3 more.";
 
-const PAGES = { desk: deskView, profile: profileView, pricing: pricingView, account: accountView, welcome: onboardingView };
-const PAGE_TITLES = { profile: "Your profile", pricing: "Pricing", account: "Account", welcome: "Welcome" };
+// "Track this" under a draft: a new tracker contact from the person and the draft's subject.
+const TRACKER_ROLES = { professor: "professor", recruiter: "recruiter" }; // other purposes become "other"
+function trackDraft(q) {
+  const v = currentVersion(q);
+  const subject = ($("#subject")?.value ?? v?.subject ?? "").trim();
+  openContactEditor(null, {
+    prefill: {
+      name: trunc(nameOf(q), 200), role: TRACKER_ROLES[q.brief.category] || "other",
+      organization: trunc(q.research.dossier?.headline || "", 200), subject: trunc(subject, 300), status: "drafted",
+    },
+    onSaved: (c) => toast(`${c.name} was added to your tracker.`, { action: { label: "Open tracker", fn: () => go("#/tracker") } }),
+  });
+}
+
+initTracker({ request, toast, esc, icons: I });
+const PAGES = { desk: deskView, profile: profileView, pricing: pricingView, account: accountView, welcome: onboardingView, tracker: trackerView };
+const PAGE_TITLES = { profile: "Your profile", pricing: "Pricing", account: "Account", welcome: "Welcome", tracker: "Tracker" };
 const VIEWS = { recipient: recipientView, research: researchView, review: reviewView, draft: draftView };
 
 /* ───────── Global interactions ───────── */

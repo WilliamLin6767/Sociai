@@ -15,6 +15,10 @@ class SupabaseError(Exception):
     """Supabase didn't answer as expected. The message is for the server log only."""
 
 
+class SupabaseRefused(SupabaseError):
+    """The database refused a change on purpose (e.g. a per-account cap). The message is user-facing."""
+
+
 class Supabase:
     def __init__(self, url, anon_key, service_key, timeout=10):
         self.url, self.anon_key, self.service_key, self.timeout = url.rstrip("/"), anon_key, service_key, timeout
@@ -63,6 +67,19 @@ class Supabase:
         if status != 200:
             raise SupabaseError(f"rpc {fn} (as user) returned {status}: {data}")
         return data
+
+    def rows_as(self, access_token, method, table, query="", body=None):
+        """Read or change a table's rows as the signed-in user, so row-level security applies.
+        Returns the affected rows. A limit the database enforces (raise exception in a trigger)
+        comes back as SupabaseRefused with the database's message."""
+        path = f"/rest/v1/{table}" + (f"?{query}" if query else "")
+        status, data = self._request(method, path, self.anon_key, bearer=access_token, body=body,
+                                     extra_headers={"Prefer": "return=representation"})
+        if status in (200, 201):
+            return data if isinstance(data, list) else []
+        if status == 400 and isinstance(data, dict) and data.get("code") == "P0001":
+            raise SupabaseRefused(data.get("message") or "The database refused that change.")
+        raise SupabaseError(f"{method} {table} (as user) returned {status}: {data}")
 
     def upload(self, access_token, bucket, path, content, content_type):
         """Store a file as the signed-in user (Storage policies apply), replacing any old one."""
