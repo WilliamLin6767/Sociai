@@ -26,6 +26,10 @@ changes them only through the database functions defined there.
   POST /api/checkout       {plan: "pack" | "monthly"} -> {url} of a Stripe Checkout page
   POST /api/billing-portal -> {url} of the Stripe customer portal
   POST /api/stripe/webhook public; Stripe-signed events add credits (once per event)
+  GET  /api/contacts?today=YYYY-MM-DD      the outreach tracker: {contacts: [...]}, newest first
+  POST /api/contacts                       {name, email?, role?, organization?, subject?, status?,
+                                            sent_at?, replied_at?, follow_up_at?, notes?} -> {contact}
+  PATCH / DELETE /api/contacts/<id>        change or delete one; tracker calls never use credits
   GET  /healthz            -> {"ok": true}
   GET  /                  the public landing page; the app itself is at /app
   GET  /privacy, /terms    the Privacy Policy and Terms (static pages)
@@ -47,6 +51,7 @@ import re
 import threading
 import time
 import traceback
+from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
@@ -54,12 +59,12 @@ from urllib.parse import parse_qs, urlparse
 import anthropic
 import stripe
 
-from . import monitoring
+from . import monitoring, tracker
 from .billing import PLANS, Billing, BillingError
 from .config import Settings, is_disposable, load_env
 from .engine import Dossier, Engine, OutreachRequest, Refused, RunUsage
 from .resume import KINDS, MAX_BYTES as MAX_RESUME, MAX_TEXT as MAX_RESUME_TEXT, ResumeError, detect, extract_text
-from .supabase import Supabase, SupabaseError
+from .supabase import Supabase, SupabaseError, SupabaseRefused
 
 STATIC = Path(__file__).parent / "static"
 # Windows can map these from the registry (e.g. .js -> text/plain), which breaks modules.
@@ -77,6 +82,9 @@ MAX_WEBHOOK_BODY = 1024 * 1024
 UUID = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
 TOKEN_TTL = 60     # seconds a verified access token is trusted before asking Supabase again
 PROJECT_ID = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+CONTACTS = "outreach_contacts"
+CONTACT_PATH = re.compile(r"^/api/contacts/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$")
+MAX_CONTACTS = 2000  # the database caps each account at this many
 PAGES = {"/": "landing.html", "/app": "app.html", "/privacy": "privacy.html", "/terms": "terms.html"}
 REDIRECTS = {"/app/": "/app", "/index.html": "/"}
 # Links that belong to the app but may still arrive at / : email links sent before the app moved
@@ -270,11 +278,16 @@ class Handler(BaseHTTPRequestHandler):
     def do_DELETE(self):
         self._api(self._delete_api, urlparse(self.path))
 
+    def do_PATCH(self):
+        self._api(self._patch_api, urlparse(self.path))
+
     def _api(self, handler, url):
         try:
             handler(url)
         except Reject as r:
             self._json(r.code, {"error": str(r), **r.extra})
+        except SupabaseRefused as e:
+            self._json(409, {"error": str(e)})
         except SupabaseError as e:
             print(f"[supabase] {e}", flush=True)
             monitoring.capture(e)
@@ -294,6 +307,8 @@ class Handler(BaseHTTPRequestHandler):
         if url.path == "/api/config":
             return self._json(200, {"configured": supa is not None, "supabase_url": settings.supabase_url,
                                     "supabase_anon_key": settings.supabase_anon_key})
+        if url.path == "/api/contacts":
+            return self._contacts("GET", url)
         user = self._user()
         if url.path == "/api/me":
             account = self._activate(user, allow_blocked=True)
@@ -359,6 +374,8 @@ class Handler(BaseHTTPRequestHandler):
             if not customer:
                 raise Reject(409, "You don't have a billing account yet. It's created with your first purchase.")
             return self._json(200, {"url": billing.portal_url(customer)})
+        if url.path == "/api/contacts":
+            return self._contacts("POST", url)
         route = JOB_ROUTES.get(url.path)
         if not route:
             raise Reject(404, "Not found.")
@@ -430,7 +447,14 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(200, saved)
         raise Reject(404, "Not found.")
 
+    def _patch_api(self, url):
+        if url.path.startswith("/api/contacts/"):
+            return self._contacts("PATCH", url)
+        raise Reject(404, "Not found.")
+
     def _delete_api(self, url):
+        if url.path.startswith("/api/contacts/"):
+            return self._contacts("DELETE", url)
         user = self._user()
         if url.path == "/api/profile/resume":
             supa.remove(RESUME_BUCKET, [f"{user['id']}/resume{ext}" for _, ext in KINDS.values()], access_token=self._token)
@@ -443,6 +467,41 @@ class Handler(BaseHTTPRequestHandler):
                 raise Reject(400, 'Send {"confirm": "DELETE"} to delete your account.')
             return self._delete_account(user)
         raise Reject(404, "Not found.")
+
+    # ── Outreach tracker: the caller's own contacts (row-level security, plus a user_id filter) ──
+
+    def _contacts(self, method, url):
+        user = self._user()
+        today = tracker.client_today(parse_qs(url.query).get("today", [None])[0], datetime.now(timezone.utc).date())
+        mine = f"user_id=eq.{user['id']}"
+        try:
+            if method == "GET":
+                rows = supa.rows_as(self._token, "GET", CONTACTS, f"select=*&{mine}&order=created_at.desc&limit={MAX_CONTACTS}")
+                return self._json(200, {"contacts": [tracker.present(r, today) for r in rows]})
+            if method == "POST":
+                fields = tracker.apply_rules(None, tracker.clean(self._read_json(), partial=False), today)
+                rows = supa.rows_as(self._token, "POST", CONTACTS, body={**fields, "user_id": user["id"]})
+                return self._json(200, {"contact": tracker.present(rows[0], today)})
+            match = CONTACT_PATH.match(url.path)
+            if not match:
+                raise Reject(404, "Not found.")
+            this = f"id=eq.{match[1]}&{mine}"
+            if method == "DELETE":
+                if not supa.rows_as(self._token, "DELETE", CONTACTS, this):
+                    raise Reject(404, "That contact isn't in your tracker.")
+                return self._json(200, {"deleted": True})
+            changes = tracker.clean(self._read_json(), partial=True)
+            if not changes:
+                raise Reject(400, "Nothing to change.")
+            old = supa.rows_as(self._token, "GET", CONTACTS, f"select=*&{this}")
+            if not old:
+                raise Reject(404, "That contact isn't in your tracker.")
+            rows = supa.rows_as(self._token, "PATCH", CONTACTS, this, body=tracker.apply_rules(old[0], changes, today))
+            if not rows:
+                raise Reject(404, "That contact isn't in your tracker.")
+            return self._json(200, {"contact": tracker.present(rows[0], today)})
+        except tracker.Invalid as e:
+            raise Reject(400, str(e))
 
     def _billing(self):
         if not billing:
