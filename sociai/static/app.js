@@ -194,11 +194,70 @@ const currentVersion = (p) => p.draft.versions[p.draft.current] || null;
 
 /* ───────── Server jobs ───────── */
 
+// Invite code: kept in this browser and sent with every API call. A 401 opens the invite screen.
+const CODE_KEY = "sociai.code";
+const readCode = () => { try { return localStorage.getItem(CODE_KEY) || ""; } catch { return ""; } };
+const saveCode = (c) => { try { c ? localStorage.setItem(CODE_KEY, c) : localStorage.removeItem(CODE_KEY); } catch {} };
+
 async function api(path, body) {
-  const res = await fetch(path, body === undefined ? {} : { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+  const headers = {};
+  const code = readCode();
+  if (code) headers["X-Sociai-Code"] = code;
+  if (body !== undefined) headers["Content-Type"] = "application/json";
+  const res = await fetch(path, body === undefined ? { headers } : { method: "POST", headers, body: JSON.stringify(body) });
   let data;
   try { data = await res.json(); } catch { data = { error: `The server answered with an error (${res.status}).` }; }
+  if (res.status === 401) showGate(!!code);
   return { http: res.status, data };
+}
+
+let gateOpen = false;
+function showGate(rejected) {
+  if (gateOpen) return;
+  gateOpen = true;
+  const gate = document.createElement("div");
+  gate.className = "gate";
+  gate.setAttribute("role", "dialog");
+  gate.setAttribute("aria-modal", "true");
+  gate.setAttribute("aria-labelledby", "gate-title");
+  gate.innerHTML = `<form class="gate-card" novalidate>
+    ${MARK}
+    <p class="label">Invite only</p>
+    <h1 class="h2" id="gate-title">Enter your invite code</h1>
+    <p class="muted">Sociai is open to a small group of testers for now. Your code is saved in this browser.</p>
+    <input class="who-input" id="gate-code" aria-labelledby="gate-title" aria-describedby="gate-err" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="Invite code">
+    <p class="field-error" id="gate-err" ${rejected ? "" : "hidden"}>${rejected ? "Your saved code wasn't accepted. Enter it again." : ""}</p>
+    <button type="submit" class="btn btn-primary">Continue <span class="arrow">${I.arrow}</span></button>
+  </form>`;
+  for (const id of ["bar", "main"]) document.getElementById(id).inert = true;
+  document.body.appendChild(gate);
+  const input = $("#gate-code", gate), err = $("#gate-err", gate), btn = $("button", gate);
+  input.focus();
+  $("form", gate).addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const code = input.value.trim();
+    if (!code) { input.focus(); return; }
+    btn.disabled = true;
+    saveCode(code);
+    let ok = false;
+    try { ok = (await api("/api/session")).http === 200; } catch {
+      err.textContent = "Couldn't reach the Sociai server. Try again.";
+      err.hidden = false; btn.disabled = false; return;
+    }
+    btn.disabled = false;
+    if (!ok) {
+      saveCode("");
+      err.textContent = "That code didn't work. Check it and try again.";
+      err.hidden = false;
+      input.select();
+      return;
+    }
+    gate.remove();
+    gateOpen = false;
+    for (const id of ["bar", "main"]) document.getElementById(id).inert = false;
+    toast("You're in. Welcome to Sociai.");
+    focusMain(view?.route || { view: "desk" });
+  });
 }
 
 const polling = new Map();
@@ -220,7 +279,8 @@ function poll(id, kind) {
       if (++misses >= 10) { polling.delete(key); return failJob(id, kind, "Lost the connection to the Sociai server. Is it still running?"); }
       return polling.set(key, setTimeout(tick, 1500));
     }
-    if (res.http === 404) { polling.delete(key); return failJob(id, kind, res.data.error || "This job is no longer running."); }
+    if (res.http === 401) return polling.set(key, setTimeout(tick, 2000)); // waits for the invite code, then carries on
+    if (res.http >= 400) { polling.delete(key); return failJob(id, kind, res.data.error || "This job is no longer running."); }
     const d = res.data;
     if (kind === "research" && d.events?.length) store.update(id, (p) => { p.research.events.push(...d.events); }, "research-events");
     if (d.status === "done") { polling.delete(key); return kind === "research" ? finishResearch(id, d.result) : finishDraft(id, d.result); }
@@ -871,7 +931,7 @@ function researchView(p) {
   const titleFor = (q) => {
     const r = q.research;
     if (r.status === "done") return "Research complete";
-    if (r.status === "error") return "Research didn't finish";
+    if (r.status === "error") return r.events.length ? "Research didn't finish" : "Research didn't start";
     const last = [...r.events].reverse().find((e) => e.kind !== "found") || r.events[r.events.length - 1];
     if (!last) return "Starting the search";
     return {
@@ -930,6 +990,7 @@ function researchView(p) {
     seen = r.events.length;
     loom.setState(r.status === "done" ? "done" : r.status === "error" ? "error" : r.events.some((e) => e.kind === "composing") ? "composing" : "running");
     $("#rs-title").textContent = titleFor(q);
+    $(".loom-card").classList.toggle("no-map", r.status === "error" && !r.events.length); // nothing to map; show the reason up top
     $("#stats").textContent = loom.stats().text;
     drawExtra(q);
     drawDock(q);
@@ -940,7 +1001,7 @@ function researchView(p) {
     const secs = ((r.finishedAt || Date.now()) - (r.startedAt || Date.now())) / 1000;
     $("#elapsed").textContent = r.status === "running" ? mmss(secs) : r.status === "done" ? `Took ${mmss(secs)}` : "";
     if (r.status === "error") {
-      extra.innerHTML = `<div class="failure" role="alert"><p>The research stopped before it finished. ${r.dossier ? "Your earlier research is still there." : "Nothing was lost from your brief."}</p><code>${esc(r.error)}</code></div>`;
+      extra.innerHTML = `<div class="failure" role="alert"><p>${r.events.length ? "The research stopped before it finished." : "The research didn't start."} ${r.dossier ? "Your earlier research is still there." : "Nothing was lost from your brief."}</p><code>${esc(r.error)}</code></div>`;
     } else if (r.status === "running" && secs > 150) {
       extra.innerHTML = `<p class="notice">This is taking longer than usual. It's still working on the server.</p>`;
     } else if (r.status === "running" && secs > 40) {
@@ -1477,3 +1538,4 @@ for (const p of store.list()) {
   }
 }
 render({ instant: true });
+api("/api/session").catch(() => {}); // opens the invite screen up front if this server needs a code
