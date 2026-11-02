@@ -27,15 +27,27 @@ DEFAULT_MODEL = "claude-sonnet-5-5"
 # Haiku has no server-side fallback, so it's left off there.
 FALLBACK_BETA = "server-side-fallback-2026-07-01"
 
-WEB_TOOLS = [
-    {"type": "web_search_20260209", "name": "web_search", "max_uses": 10},
-    {"type": "web_fetch_20260209", "name": "web_fetch", "max_uses": 15},
-]
+# Research budget per run, the main cost lever: override with SOCIAI_MAX_SEARCHES / SOCIAI_MAX_FETCHES.
+DEFAULT_MAX_SEARCHES = 5
+DEFAULT_MAX_FETCHES = 8
+WEB_TOOL_TYPES = {"web_search": "web_search_20260209", "web_fetch": "web_fetch_20260209"}
 # Haiku takes the basic web tools; the 20260209 versions need Opus or Sonnet.
-BASIC_WEB_TOOLS = [
-    {"type": "web_search_20250305", "name": "web_search", "max_uses": 10},
-    {"type": "web_fetch_20250910", "name": "web_fetch", "max_uses": 15},
-]
+BASIC_WEB_TOOL_TYPES = {"web_search": "web_search_20250305", "web_fetch": "web_fetch_20250910"}
+
+
+def _env_limit(name, default):
+    try:
+        value = int(os.environ.get(name) or default)
+    except ValueError:
+        return default
+    return max(1, value)
+
+
+def web_tools(model, searches, fetches):
+    """The research tools with these per-run limits (at least 1 of each)."""
+    types = BASIC_WEB_TOOL_TYPES if _is_haiku(model) else WEB_TOOL_TYPES
+    return [{"type": types["web_search"], "name": "web_search", "max_uses": max(1, searches)},
+            {"type": types["web_fetch"], "name": "web_fetch", "max_uses": max(1, fetches)}]
 
 # Estimated prices in USD per million tokens: input, output, cache read.
 # Cache writes cost 1.25x input. Web fetch adds no fee beyond the tokens it reads.
@@ -291,6 +303,8 @@ class Engine:
         self.client = client or anthropic.Anthropic()
         self.research_model = research_model or model or os.environ.get("SOCIAI_RESEARCH_MODEL") or DEFAULT_MODEL
         self.draft_model = draft_model or model or os.environ.get("SOCIAI_DRAFT_MODEL") or DEFAULT_MODEL
+        self.max_searches = _env_limit("SOCIAI_MAX_SEARCHES", DEFAULT_MAX_SEARCHES)
+        self.max_fetches = _env_limit("SOCIAI_MAX_FETCHES", DEFAULT_MAX_FETCHES)
 
     def _create(self, model, usage=None, on_block=None, **kwargs):
         """One API call. With on_block, stream it and report each content block as it completes."""
@@ -326,7 +340,9 @@ class Engine:
         )
         messages = [{"role": "user", "content": prompt}]
         on_block = _progress_reporter(on_progress) if on_progress else None
-        # Server tools can pause a long turn; send it back so the server continues.
+        # Server tools can pause a long turn; send it back so the server continues. max_uses
+        # counts per request, so a continuation only gets what's left of the run's budget.
+        used = {"web_search": 0, "web_fetch": 0}
         for _ in range(6):
             response = self._create(
                 self.research_model,
@@ -334,12 +350,16 @@ class Engine:
                 on_block=on_block,
                 max_tokens=16000,
                 system=RESEARCH_SYSTEM,
-                tools=BASIC_WEB_TOOLS if _is_haiku(self.research_model) else WEB_TOOLS,
+                tools=web_tools(self.research_model, self.max_searches - used["web_search"],
+                                self.max_fetches - used["web_fetch"]),
                 output_config={"effort": "medium", "format": {"type": "json_schema", "schema": DOSSIER_SCHEMA}},
                 messages=messages,
             )
             if response.stop_reason != "pause_turn":
                 break
+            for block in response.content:
+                if block.type == "server_tool_use" and block.name in used:
+                    used[block.name] += 1
             messages.append({"role": "assistant", "content": response.content})
         text = next(b.text for b in response.content if b.type == "text")
         return Dossier(**json.loads(text))

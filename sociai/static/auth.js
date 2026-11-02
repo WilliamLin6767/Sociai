@@ -51,8 +51,13 @@ export async function refreshSession() {
   return error ? null : data.session;
 }
 
-export function signUp(email, password) {
-  return client.auth.signUp({ email, password, options: { emailRedirectTo: returnTo("confirmed") } });
+// data is stored on the Supabase user (user_metadata), e.g. when the Terms were accepted.
+export function signUp(email, password, data = {}) {
+  return client.auth.signUp({ email, password, options: { emailRedirectTo: returnTo("confirmed"), data } });
+}
+
+export function updateUserData(data) {
+  return client.auth.updateUser({ data });
 }
 
 export function signIn(email, password) {

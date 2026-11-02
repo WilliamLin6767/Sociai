@@ -5,7 +5,7 @@
 import { store } from "./store.js";
 import {
   accessToken, currentSession, initAuth, onAuthChange, refreshSession, resendConfirmation, sendPasswordReset,
-  setPassword, signIn, signOut, signUp, verifyEmailLink,
+  setPassword, signIn, signOut, signUp, updateUserData, verifyEmailLink,
 } from "./auth.js";
 import { Loom, domain, normUrl } from "./loom.js";
 
@@ -294,6 +294,12 @@ function toggleAccountMenu(btn) {
 // an account, confirm the email, forgot password, and set a new one from a reset link.
 let signInEl = null;
 const MIN_PASSWORD = 10;
+// Bump when the Terms or Privacy Policy change enough that people should agree again.
+const TERMS_VERSION = "2026-11-01";
+const termsAccepted = (user) => user?.user_metadata?.terms_version === TERMS_VERSION;
+const termsRecord = () => ({ terms_version: TERMS_VERSION, terms_accepted_at: new Date().toISOString() });
+const LEGAL_LINKS = '<a class="link-btn" href="/terms" target="_blank" rel="noopener">Terms</a> and <a class="link-btn" href="/privacy" target="_blank" rel="noopener">Privacy Policy</a>';
+const agreeBox = (id) => `<label class="agree" for="${id}"><input type="checkbox" id="${id}"><span>I agree to the ${LEGAL_LINKS}</span></label>`;
 const EMAIL_RE = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
 
 function showSignIn({ message = "", email = "", screen = "signin", notice = "" } = {}) {
@@ -308,7 +314,7 @@ function showSignIn({ message = "", email = "", screen = "signin", notice = "" }
     for (const id of ["bar", "main"]) document.getElementById(id).inert = true;
     document.body.appendChild(signInEl);
   }
-  ({ signin: drawSignIn, signup: drawSignUp, forgot: drawForgot, "new-password": drawNewPassword })[screen](email, message, notice);
+  ({ signin: drawSignIn, signup: drawSignUp, forgot: drawForgot, "new-password": drawNewPassword, terms: drawTerms })[screen](email, message, notice);
 }
 
 function hideSignIn() {
@@ -359,6 +365,7 @@ function gateCard({ label, title, intro = "", notice = "", body, submit, foot = 
     <p class="field-error" id="signin-err" role="alert" hidden></p>
     <button type="submit" class="btn btn-primary">${submit} <span class="arrow">${I.arrow}</span></button>
     ${foot ? `<div class="gate-foot">${foot}</div>` : ""}
+    <p class="gate-legal"><a href="/terms" target="_blank" rel="noopener">Terms</a><span aria-hidden="true">·</span><a href="/privacy" target="_blank" rel="noopener">Privacy</a></p>
   </form>`;
   const form = $("form", signInEl);
   form.addEventListener("click", (e) => {
@@ -430,7 +437,7 @@ function drawSignUp(email = "") {
     label: "Sociai", title: "Create your account", email,
     intro: "New accounts start with 2 free credits. Each credit covers a research run and up to 3 drafts.",
     body: emailField(email) + passwordField("signup-password", "Password", { autocomplete: "new-password", meter: true })
-      + passwordField("signup-confirm", "Confirm password", { autocomplete: "new-password" }),
+      + passwordField("signup-confirm", "Confirm password", { autocomplete: "new-password" }) + agreeBox("signup-agree"),
     submit: "Create account",
     foot: `<span class="muted">Already have an account?</span> ${gateLink("signin", "Sign in")}`,
   });
@@ -443,12 +450,13 @@ function drawSignUp(email = "") {
     if (!EMAIL_RE.test(addr)) return showSignInError("Enter your full email address.");
     if (password.length < MIN_PASSWORD) return showSignInError(`Use at least ${MIN_PASSWORD} characters for your password.`);
     if (password !== confirm) return showSignInError("The two passwords don't match.");
+    if (!$("#signup-agree", form).checked) return showSignInError("To create an account, agree to the Terms and Privacy Policy.");
     const check = await fetch("/api/check-email", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ email: addr }) });
     if (!check.ok) {
       const d = await check.json().catch(() => ({}));
       return showSignInError(d.error || "That email address can't be used.");
     }
-    const { data, error } = await signUp(addr, password);
+    const { data, error } = await signUp(addr, password, termsRecord());
     if (error) {
       if (["user_already_exists", "email_exists"].includes(error.code)) return showExists();
       if (error.code === "weak_password") return showSignInError(`That password is too easy to guess. Use at least ${MIN_PASSWORD} characters and mix in numbers or symbols.`);
@@ -507,6 +515,30 @@ function drawNewPassword() {
     resettingPassword = false;
     toast("Password changed. You're signed in.");
     startSession(await currentSession());
+  });
+}
+
+// Accounts that haven't agreed to the current Terms (e.g. made before they existed) agree once
+// before anything else; the answer is kept on the Supabase user.
+let termsSession = null;
+function drawTerms() {
+  const form = gateCard({
+    label: "Before you continue", title: "Agree to the Terms",
+    intro: `Sociai has ${LEGAL_LINKS.replace("Terms", "Terms of Service")}. They explain what's stored, how to delete it, and how credits and refunds work.`,
+    body: agreeBox("terms-agree"), submit: "Continue",
+    foot: `<span class="muted">Signed in as ${esc(termsSession?.user?.email || "")}.</span> <button type="button" class="link-btn" data-act="terms-sign-out">Sign out</button>`,
+  });
+  $("#terms-agree", form).focus();
+  form.addEventListener("click", (e) => {
+    if (e.target.closest("[data-act='terms-sign-out']")) signOut().finally(() => location.reload());
+  });
+  onGateSubmit(form, async () => {
+    if (!$("#terms-agree", form).checked) return showSignInError("Tick the box to agree, or sign out.");
+    const { data, error } = await updateUserData(termsRecord());
+    if (error) throw error;
+    const session = { ...termsSession, user: data.user };
+    termsSession = null;
+    startSession(session);
   });
 }
 
@@ -2288,7 +2320,7 @@ function pricingView() {
           <button type="button" class="btn btn-line" data-act="buy" data-plan="monthly">Start the monthly plan</button>
         </section>
       </div>
-      <p class="field-hint">Payments are handled by Stripe; Sociai never sees your card details.</p>`;
+      <p class="field-hint">Payments are handled by Stripe; Sociai never sees your card details. By buying you agree to the ${LEGAL_LINKS}, including the refund policy for credits.</p>`;
   });
   $("#main").addEventListener("click", (e) => {
     const a = e.target.closest("[data-act='buy']");
@@ -2456,6 +2488,11 @@ let resettingPassword = false;
 
 async function startSession(session) {
   if (sessionUser || !session || resettingPassword) return;
+  if (!termsAccepted(session.user)) {
+    if (termsSession) return; // already asking
+    termsSession = session;
+    return showSignIn({ screen: "terms" });
+  }
   sessionUser = session.user.id;
   account.email = session.user.email || "";
   hideSignIn();

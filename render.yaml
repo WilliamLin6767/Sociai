@@ -2,7 +2,7 @@ services:
   - type: web
     name: sociai
     runtime: python
-    plan: free
+    plan: starter  # always on; the free plan sleeps and drops running jobs
     buildCommand: pip install -r requirements.txt
     startCommand: python -m sociai.web
     healthCheckPath: /healthz
@@ -21,6 +21,12 @@ services:
         value: "100"
       - key: SOCIAI_TRUST_PROXY
         value: "1"
+      - key: PUBLIC_URL  # e.g. https://sociai.app (your custom domain, or the onrender.com URL)
+        sync: false
+      - key: SOCIAI_STRIPE_MODE  # test or live; must match STRIPE_SECRET_KEY
+        value: test
+      - key: SENTRY_DSN  # optional error monitoring; leave empty to turn it off
+        sync: false
       - key: STRIPE_SECRET_KEY
         sync: false
       - key: STRIPE_WEBHOOK_SECRET

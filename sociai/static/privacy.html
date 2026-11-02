@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="theme-color" content="#faf6ef">
+<title>Privacy Policy · Sociai</title>
+<link rel="icon" href="/mark.svg" type="image/svg+xml">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=Lexend:wght@400;500&family=Instrument+Sans:wght@400;500;600&family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,500;0,6..72,600;1,6..72,400;1,6..72,500&display=swap">
+<link rel="stylesheet" href="/sociai.css">
+<script>
+  try { const t = localStorage.getItem("sociai.theme"); if (t) document.documentElement.dataset.theme = t; } catch {}
+</script>
+</head>
+<body class="legal-body">
+<header class="bar"><div class="page bar-inner">
+  <a class="brand" href="/" aria-label="Sociai home"><svg class="brand-mark" viewBox="0 0 232 216" aria-hidden="true"><path class="b-green" d="M0 216V124C0 82 34 49 76 49h21c41 0 75 33 75 75s-32 66-72 66H44c-20 0-34 10-44 26z"/><path class="b-tan" d="M135 0h62c19 0 35 16 35 35v47c0 38-31 70-70 70h-22c-39 0-70-32-70-70V65C70 29 99 0 135 0z"/><path class="b-star" d="M120 79c3 17 10 24 27 27-17 3-24 10-27 27-3-17-10-24-27-27 17-3 24-10 27-27z"/></svg><span class="brand-word">Socia<span class="brand-i">ı</span></span></a>
+  <div class="crumb"><span class="crumb-sep" aria-hidden="true">/</span><span class="crumb-who">Privacy Policy</span></div>
+</div></header>
+<main class="ruled"><div class="page"><article class="legal">
+  <div class="row lead"><div class="margin"><p class="label">Privacy</p></div><div class="col">
+    <h1 class="h2">Privacy Policy</h1>
+    <p class="muted">Last updated: <span class="fill">[DATE]</span></p>
+    <p>This policy explains what Sociai (“we”, operated by <span class="fill">[YOUR NAME OR COMPANY]</span>) stores about you, why, who processes it, and how to delete it.</p>
+  </div></div>
+
+  <div class="row"><div class="margin"><p class="label"><span class="n">01</span>&nbsp; What we store</p></div><div class="col">
+    <p>When you create an account and use Sociai, we store, in our database hosted by Supabase:</p>
+    <ul>
+      <li><b>Account:</b> your email address, a securely hashed password (managed by Supabase Auth), your credit balance and credit history, and the IP address seen on your first visit (used only to limit how many accounts are created from one network).</li>
+      <li><b>Profile:</b> your main goal, the “about you” text, default format, and writing samples you add.</li>
+      <li><b>Resume:</b> the file you upload (PDF or Word) in private storage, and the text extracted from it.</li>
+      <li><b>Projects:</b> each outreach you start: who it is for, your goal, the research results, your corrections and every draft.</li>
+      <li><b>Payments:</b> if you buy credits, a Stripe customer id and your purchase history. Card details are entered on Stripe’s pages and never reach us.</li>
+    </ul>
+    <p>Supabase stores this data in <span class="fill">[REGION, e.g. the United States]</span>. Only you can read or change your own profile, samples, resume and projects; this is enforced by the database itself.</p>
+  </div></div>
+
+  <div class="row"><div class="margin"><p class="label"><span class="n">02</span>&nbsp; AI processing</p></div><div class="col">
+    <p>To research a person and write a draft, Sociai sends a request to <b>Anthropic’s Claude API</b>. That request contains the name or link you entered, your goal, your “about you” text, your writing samples, your corrections and, for drafts, an excerpt of your resume text. Claude searches the public web and reads public pages to research the person.</p>
+    <p>Anthropic processes this data to provide the service under its commercial terms and, under those terms, does not use it to train its models. <span class="fill">[Confirm against Anthropic’s current commercial terms and data retention policy, and link them here.]</span></p>
+  </div></div>
+
+  <div class="row"><div class="margin"><p class="label"><span class="n">03</span>&nbsp; What we never do</p></div><div class="col">
+    <ul>
+      <li>Sociai <b>never sends messages for you</b>. It drafts; you decide whether to copy and send anything, from your own email or account.</li>
+      <li>We don’t sell your data or share it for advertising.</li>
+      <li>Error reports (if enabled) exclude what you write: no resume text, writing samples, request contents or keys.</li>
+    </ul>
+  </div></div>
+
+  <div class="row"><div class="margin"><p class="label"><span class="n">04</span>&nbsp; Service providers</p></div><div class="col">
+    <ul>
+      <li><b>Supabase</b>: database, sign-in and file storage.</li>
+      <li><b>Anthropic</b>: the Claude API for research and drafting.</li>
+      <li><b>Stripe</b>: payments.</li>
+      <li><b>Render</b>: hosting.</li>
+      <li><span class="fill">[Sentry: error monitoring, if you turn it on. Your email provider for sign-up and reset emails, e.g. Resend.]</span></li>
+    </ul>
+  </div></div>
+
+  <div class="row"><div class="margin"><p class="label"><span class="n">05</span>&nbsp; Deleting your data</p></div><div class="col">
+    <p>Open <b>Your profile</b> (the round account button, then “Your profile”) and choose <b>Delete my account and data</b>. This permanently deletes your profile, writing samples, resume file and text, projects and credit history, and signs you out. To prevent repeat free credits, we keep only a one-way hash of your email address.</p>
+    <p>Records Stripe must keep for tax and accounting stay with Stripe. You can also ask us to delete your data, or for a copy of it, at <span class="fill">[CONTACT EMAIL]</span>.</p>
+  </div></div>
+
+  <div class="row"><div class="margin"><p class="label"><span class="n">06</span>&nbsp; Contact</p></div><div class="col">
+    <p>Questions about this policy: <span class="fill">[CONTACT EMAIL]</span>. <span class="fill">[Postal address, if required where you operate.]</span></p>
+    <p><a class="link-btn" href="/terms">Terms of Service</a> · <a class="link-btn" href="/">Back to Sociai</a></p>
+  </div></div>
+</article></div></main>
+</body>
+</html>
