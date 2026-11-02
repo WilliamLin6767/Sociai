@@ -11,9 +11,21 @@ services:
         value: 3.13.3
       - key: ANTHROPIC_API_KEY
         sync: false
-      - key: SOCIAI_ACCESS_CODES
+      - key: SUPABASE_URL
         sync: false
-      - key: SOCIAI_DAILY_LIMIT
-        value: "20"
+      - key: SUPABASE_ANON_KEY
+        sync: false
+      - key: SUPABASE_SERVICE_ROLE_KEY
+        sync: false
       - key: SOCIAI_GLOBAL_DAILY_LIMIT
-        value: "200"
+        value: "100"
+      - key: SOCIAI_TRUST_PROXY
+        value: "1"
+      - key: STRIPE_SECRET_KEY
+        sync: false
+      - key: STRIPE_WEBHOOK_SECRET
+        sync: false
+      - key: STRIPE_PRICE_PACK
+        sync: false
+      - key: STRIPE_PRICE_MONTHLY
+        sync: false
