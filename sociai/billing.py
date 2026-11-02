@@ -132,8 +132,8 @@ class Billing:
             "client_reference_id": user_id,
             "metadata": {"user_id": user_id, "kind": plan},
             # The query comes before the hash, so the app can see it under its hash routes.
-            "success_url": f"{self.public_url}/?checkout=success#/account",
-            "cancel_url": f"{self.public_url}/?checkout=cancelled#/pricing",
+            "success_url": f"{self.public_url}/app?checkout=success#/account",
+            "cancel_url": f"{self.public_url}/app?checkout=cancelled#/pricing",
         }
         if plan == "monthly":
             params["subscription_data"] = {"metadata": {"user_id": user_id}}
@@ -143,7 +143,7 @@ class Billing:
 
     def portal_url(self, customer):
         return self.client.v1.billing_portal.sessions.create(
-            params={"customer": customer, "return_url": f"{self.public_url}/#/account"}).url
+            params={"customer": customer, "return_url": f"{self.public_url}/app#/account"}).url
 
     # ── Webhooks ──
 

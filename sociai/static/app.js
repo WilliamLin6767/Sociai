@@ -4,8 +4,8 @@
 
 import { store } from "./store.js";
 import {
-  accessToken, currentSession, initAuth, onAuthChange, refreshSession, resendConfirmation, sendPasswordReset,
-  setPassword, signIn, signOut, signUp, updateUserData, verifyEmailLink,
+  accessToken, currentSession, initAuth, onAuthChange, refreshSession, requestedScreen, resendConfirmation,
+  sendPasswordReset, setPassword, signIn, signOut, signUp, updateUserData, verifyEmailLink,
 } from "./auth.js";
 import { Loom, domain, normUrl } from "./loom.js";
 
@@ -2531,6 +2531,7 @@ async function boot() {
   const query = new URLSearchParams(location.search);
   let kind = query.get("auth");
   const tokenHash = query.get("token_hash"), otpType = query.get("type");
+  const screen = requestedScreen();
   if (tokenHash) kind = otpType === "recovery" ? "reset" : "confirmed";
   let auth;
   try {
@@ -2548,7 +2549,7 @@ async function boot() {
     const { data, error } = await verifyEmailLink(tokenHash, otpType);
     if (error) linkError = error; else session = data.session;
   }
-  for (const k of ["auth", "code", "token_hash", "type", "error", "error_code", "error_description", "sb_flow_id"]) query.delete(k);
+  for (const k of ["auth", "code", "token_hash", "type", "error", "error_code", "error_description", "sb_flow_id", "mode"]) query.delete(k);
   const hash = /(^#|&)(access_token|error)=/.test(location.hash) ? "" : location.hash;
   history.replaceState(null, "", location.pathname + (query.toString() ? `?${query}` : "") + hash);
 
@@ -2575,7 +2576,8 @@ async function boot() {
     return linkError ? showSignIn({ message: `${LINK_ERROR} Sign in, and Sociai will offer to send a new confirmation email.` })
       : showSignIn({ notice: "Your email is confirmed. Sign in with your password to continue." });
   }
-  showSignIn({ message: deleted ? "Your account and all its data were deleted." : linkError ? LINK_ERROR : "" });
+  if (deleted || linkError) return showSignIn({ message: deleted ? "Your account and all its data were deleted." : LINK_ERROR });
+  showSignIn({ screen });
 }
 
 boot();

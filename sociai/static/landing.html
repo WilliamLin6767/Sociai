@@ -1,0 +1,364 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="theme-color" content="#faf6ef">
+<title>Sociai: Cold emails that sound like you and get replies</title>
+<meta name="description" content="Sociai researches the professor, recruiter, alum or founder you're writing to from public info, then drafts a cold email in your own voice. Start with 2 free credits.">
+<link rel="canonical" href="https://getsociai.com/">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="Sociai">
+<meta property="og:url" content="https://getsociai.com/">
+<meta property="og:title" content="Sociai: Cold emails that sound like you and actually get replies">
+<meta property="og:description" content="Sociai researches the person you're writing to from public info, then drafts a cold email in your own voice. You edit it and send it yourself.">
+<meta name="twitter:card" content="summary">
+<meta name="twitter:title" content="Sociai: Cold emails that sound like you and actually get replies">
+<meta name="twitter:description" content="Sociai researches the person you're writing to from public info, then drafts a cold email in your own voice. You edit it and send it yourself.">
+<link rel="icon" href="/mark.svg" type="image/svg+xml">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=Lexend:wght@400;500&family=Instrument+Sans:wght@400;500;600&family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,500;0,6..72,600;1,6..72,400;1,6..72,500&display=swap">
+<link rel="stylesheet" href="/sociai.css">
+<script>
+  try { const t = localStorage.getItem("sociai.theme"); if (t) document.documentElement.dataset.theme = t; } catch {}
+  // Old app links (#/account, #/p/...) now live under /app.
+  if (location.hash.startsWith("#/")) location.replace("/app" + location.hash);
+  // Signed in already? supabase-js keeps the session under sb-<project>-auth-token. The nav then
+  // offers "Open app" instead of Log in / Sign up; the app itself checks the session properly.
+  try {
+    for (let i = 0; i < localStorage.length; i++) {
+      const k = localStorage.key(i);
+      if (/^sb-.+-auth-token$/.test(k) && JSON.parse(localStorage.getItem(k))?.refresh_token) { document.documentElement.dataset.session = ""; break; }
+    }
+  } catch {}
+</script>
+<!-- Meta Pixel Code -->
+<script>
+!function(f,b,e,v,n,t,s)
+{if(f.fbq)return;n=f.fbq=function(){n.callMethod?
+n.callMethod.apply(n,arguments):n.queue.push(arguments)};
+if(!f._fbq)f._fbq=n;n.push=n;n.loaded=!0;n.version='2.0';
+n.queue=[];t=b.createElement(e);t.async=!0;
+t.src=v;s=b.getElementsByTagName(e)[0];
+s.parentNode.insertBefore(t,s)}(window, document,'script',
+'https://connect.facebook.net/en_US/fbevents.js');
+fbq('init', '1808625520381378');
+fbq('track', 'PageView');
+</script>
+<noscript><img height="1" width="1" style="display:none"
+src="https://www.facebook.com/tr?id=1808625520381378&ev=PageView&noscript=1"
+/></noscript>
+<!-- End Meta Pixel Code -->
+<style>
+  html { scroll-behavior: smooth; }
+  @media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } }
+  [data-session] .when-out, :root:not([data-session]) .when-in { display: none !important; }
+  .lp main { padding-bottom: 0; }
+  .lp section { scroll-margin-top: calc(var(--bar-h) + var(--s4)); }
+
+  /* Nav */
+  .lp-nav { display: flex; align-items: center; gap: var(--s2); margin-left: auto; }
+  .lp-nav .nav-link { font-size: 14px; color: var(--ink-2); text-decoration: none; padding: 8px 10px; border-radius: var(--r1); }
+  .lp-nav .nav-link:hover { color: var(--ink); background: var(--paper-2); }
+  .lp-nav .sep { width: 1px; height: 20px; background: var(--rule); margin: 0 var(--s2); }
+  @media (max-width: 600px) { .lp-nav .nav-link, .lp-nav .sep { display: none; } .lp-nav .btn-ghost { padding: 0 8px; } }
+
+  /* Hero */
+  .hero { padding: var(--s8) 0 var(--s8); display: grid; grid-template-columns: minmax(0, 1.05fr) minmax(0, .95fr); gap: var(--s8); align-items: center; }
+  .badge { display: inline-flex; align-items: center; gap: 8px; padding: 6px 12px 6px 10px; border: 1px solid var(--rule); border-radius: 999px; background: var(--sheet); font: 500 12.5px/1.2 var(--sans); color: var(--ink-2); margin: 0 0 var(--s5); }
+  .badge::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: var(--brand-sage); flex: none; }
+  .hero .display { font-size: clamp(38px, 5vw, 64px); }
+  .hero-sub { font: 400 clamp(17.5px, 1.6vw, 20px)/1.55 var(--serif); color: var(--ink-2); margin: var(--s5) 0 0; max-width: 34em; }
+  .hero-actions { display: flex; gap: var(--s3); flex-wrap: wrap; margin-top: var(--s6); }
+  .hero-actions .btn { --h: 46px; padding: 0 22px; font-size: 15.5px; }
+  .hero-note { margin: var(--s3) 0 0; font-size: 13.5px; color: var(--ink-3); }
+
+  /* The sample draft */
+  .mock { background: var(--sheet); border: 1px solid var(--rule); border-radius: var(--r2); box-shadow: var(--shadow-sheet); overflow: hidden; }
+  .mock-top { display: flex; justify-content: space-between; gap: var(--s3); padding: 10px var(--s4); border-bottom: 1px solid var(--rule-2); background: var(--paper-2); }
+  .mock-top .label { font-size: 10.5px; }
+  .mock-fields { padding: 0 var(--s4); border-bottom: 1px solid var(--rule-2); font-size: 13.5px; }
+  .mock-fields div { display: flex; gap: var(--s3); padding: 9px 0; min-width: 0; }
+  .mock-fields div + div { border-top: 1px solid var(--rule-2); }
+  .mock-fields dt { color: var(--ink-3); width: 54px; flex: none; }
+  .mock-fields dd { margin: 0; color: var(--ink); min-width: 0; overflow-wrap: anywhere; }
+  .mock-body { padding: var(--s4) var(--s4) var(--s3); font: 400 15.5px/1.6 var(--serif); color: var(--ink); }
+  .mock-body p { margin: 0 0 var(--s3); }
+  .hl { background: color-mix(in oklab, var(--brand-sage) 22%, transparent); border-radius: 2px; padding: 0 1px; box-decoration-break: clone; -webkit-box-decoration-break: clone; }
+  .hl sup, .notes sup { font: 500 10px/1 var(--mono); color: var(--thread-ink); margin-left: 1px; }
+  .notes { list-style: none; margin: 0; padding: var(--s3) var(--s4) var(--s4); border-top: 1px dashed var(--rule); display: grid; gap: 6px; font-size: 12.5px; color: var(--ink-3); }
+  .notes li { display: flex; gap: 8px; }
+  .notes sup { margin: 2px 0 0; }
+  .mock-caption { margin: var(--s3) 0 0; font-size: 12.5px; color: var(--ink-3); text-align: center; }
+
+  /* Sections */
+  .band { border-top: 1px solid var(--rule-2); padding: var(--s8) 0; }
+  .band .row + .row { margin-top: var(--s6); }
+  .band .h2 { max-width: 22ch; }
+  .band-intro { margin: var(--s3) 0 0; font: 400 18px/1.55 var(--serif); color: var(--ink-2); max-width: 38em; }
+  .steps, .who, .why { list-style: none; margin: 0; padding: 0; display: grid; gap: var(--s6); }
+  .steps { grid-template-columns: repeat(3, minmax(0, 1fr)); counter-reset: step; }
+  .steps li, .why li { border-top: 1.5px solid var(--ink); padding-top: var(--s4); }
+  .steps .n { font: 400 40px/1 var(--serif); color: var(--thread-ink); display: block; margin-bottom: var(--s3); font-variant-numeric: tabular-nums; }
+  .steps p, .who p, .why p { margin: var(--s2) 0 0; font-size: 15px; line-height: 1.6; color: var(--ink-2); }
+  .who { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--s5); }
+  .who li { background: var(--sheet); border: 1px solid var(--rule-2); border-radius: var(--r2); padding: var(--s5); }
+  .who .label { margin-bottom: var(--s2); }
+  .why { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--s6) var(--s7); }
+  .pullquote { margin: 0; padding-left: var(--s5); border-left: 2px solid var(--thread); font: 400 italic clamp(22px, 2.4vw, 28px)/1.3 var(--serif); color: var(--ink); max-width: 30ch; }
+
+  /* Pricing */
+  .tiers { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: var(--s5); }
+  .tier { border: 1px solid var(--rule); border-radius: var(--r2); background: var(--sheet); padding: var(--s5); display: flex; flex-direction: column; gap: var(--s2); }
+  .tier.is-pick { border-color: var(--thread); box-shadow: 0 0 0 1px var(--thread); }
+  .tier .price { margin: var(--s2) 0 0; font: 400 44px/1 var(--serif); letter-spacing: -.02em; color: var(--ink); }
+  .tier .price small { font: 400 15px/1 var(--sans); color: var(--ink-3); letter-spacing: 0; margin-left: 4px; }
+  .tier .credits { margin: 0; font: 500 15px/1.4 var(--sans); color: var(--ink); }
+  .tier .per { margin: 0; font-size: 13.5px; color: var(--ink-3); }
+  .tier ul { margin: var(--s3) 0 var(--s4); padding-left: 1.1em; font-size: 14px; line-height: 1.55; color: var(--ink-2); }
+  .tier li + li { margin-top: 4px; }
+  .tier .btn { margin-top: auto; align-self: flex-start; }
+  .credit-def { margin: var(--s5) 0 0; padding: var(--s3) var(--s4); border-left: 2px solid var(--pen); background: var(--sheet); font-size: 14.5px; color: var(--ink-2); max-width: 640px; }
+  .credit-def b { color: var(--ink); font-weight: 600; }
+
+  /* FAQ */
+  .faq { max-width: 720px; border-top: 1px solid var(--rule); }
+  .faq details { border-bottom: 1px solid var(--rule); }
+  .faq summary { list-style: none; cursor: pointer; display: flex; justify-content: space-between; align-items: baseline; gap: var(--s4); padding: var(--s4) 0; font: 500 19px/1.35 var(--serif); color: var(--ink); }
+  .faq summary::-webkit-details-marker { display: none; }
+  .faq summary::after { content: "+"; font: 400 20px/1 var(--mono); color: var(--ink-3); flex: none; transition: transform var(--d-2) var(--ease-out); }
+  .faq details[open] summary::after { transform: rotate(45deg); }
+  .faq details p { margin: 0 0 var(--s4); font-size: 15.5px; line-height: 1.65; color: var(--ink-2); max-width: 62ch; }
+
+  /* Closing banner */
+  .closer { margin: var(--s8) 0; padding: var(--s7) var(--s6); border-radius: var(--r2); background: var(--brand-green); color: #faf6ef; display: flex; justify-content: space-between; align-items: center; gap: var(--s5) var(--s6); flex-wrap: wrap; }
+  .closer h2 { margin: 0; font: 400 clamp(26px, 3vw, 36px)/1.15 var(--serif); letter-spacing: -.012em; max-width: 20ch; }
+  .closer p { margin: var(--s2) 0 0; color: color-mix(in oklab, #faf6ef 78%, var(--brand-green)); font-size: 15px; }
+  .closer .actions { display: flex; gap: var(--s3); flex-wrap: wrap; }
+  .closer .btn { --h: 46px; padding: 0 22px; font-size: 15.5px; }
+  .closer .btn-light { background: #faf6ef; color: #2f332c; }
+  .closer .btn-light:hover { background: #fff; }
+  .closer .btn-outline { border: 1px solid color-mix(in oklab, #faf6ef 55%, transparent); color: #faf6ef; }
+  .closer .btn-outline:hover { background: color-mix(in oklab, #faf6ef 12%, transparent); }
+
+  /* Footer */
+  .lp-foot { border-top: 1px solid var(--rule-2); padding: var(--s6) 0 var(--s7); font-size: 13.5px; color: var(--ink-3); }
+  .lp-foot-inner { display: flex; justify-content: space-between; align-items: flex-start; gap: var(--s5); flex-wrap: wrap; }
+  .lp-foot .brand-word { font-size: 18px; }
+  .lp-foot .brand-mark { width: 24px; }
+  .lp-foot p { margin: var(--s3) 0 0; }
+  .lp-foot nav { display: flex; gap: var(--s3) var(--s5); flex-wrap: wrap; }
+  .lp-foot a { color: var(--ink-2); text-underline-offset: 3px; text-decoration-color: var(--rule); }
+  .lp-foot a:hover { color: var(--ink); }
+
+  @media (max-width: 960px) {
+    .hero { grid-template-columns: minmax(0, 1fr); gap: var(--s7); padding-top: var(--s7); }
+    .mock-wrap { max-width: 560px; }
+    .tiers { grid-template-columns: minmax(0, 1fr); max-width: 520px; }
+  }
+  @media (max-width: 760px) {
+    .steps, .who, .why { grid-template-columns: minmax(0, 1fr); }
+    .band { padding: var(--s7) 0; }
+    .closer { padding: var(--s6) var(--s5); }
+  }
+  @media (max-width: 420px) {
+    .hero-actions .btn, .closer .btn { flex: 1 1 auto; }
+    .mock-fields dt { width: 48px; }
+  }
+</style>
+</head>
+<body class="lp">
+<a class="skip" href="#main">Skip to content</a>
+<header class="bar"><div class="page bar-inner">
+  <a class="brand" href="/" aria-label="Sociai home"><svg class="brand-mark" viewBox="0 0 232 216" aria-hidden="true"><path class="b-green" d="M0 216V124C0 82 34 49 76 49h21c41 0 75 33 75 75s-32 66-72 66H44c-20 0-34 10-44 26z"/><path class="b-tan" d="M135 0h62c19 0 35 16 35 35v47c0 38-31 70-70 70h-22c-39 0-70-32-70-70V65C70 29 99 0 135 0z"/><path class="b-star" d="M120 79c3 17 10 24 27 27-17 3-24 10-27 27-3-17-10-24-27-27 17-3 24-10 27-27z"/></svg><span class="brand-word">Socia<span class="brand-i">ı</span></span></a>
+  <nav class="lp-nav" aria-label="Main">
+    <a class="nav-link" href="#pricing">Pricing</a>
+    <a class="nav-link" href="#faq">FAQ</a>
+    <span class="sep" aria-hidden="true"></span>
+    <a class="btn btn-ghost btn-sm when-out" href="/app?mode=login">Log in</a>
+    <a class="btn btn-primary btn-sm when-out" href="/app?mode=signup">Sign up</a>
+    <a class="btn btn-primary btn-sm when-in" href="/app">Open app</a>
+  </nav>
+</div></header>
+
+<main id="main" tabindex="-1">
+  <div class="page">
+    <section class="hero" aria-labelledby="hero-title">
+      <div>
+        <p class="badge">Built by current Stanford and Berkeley students</p>
+        <h1 class="display" id="hero-title">Cold emails that sound like you and <em>actually get replies</em></h1>
+        <p class="hero-sub">Tell Sociai who you're writing to: a professor, a recruiter, an alum, a founder. It researches them from public information, then drafts the message in your own voice. You edit it and send it yourself.</p>
+        <div class="hero-actions">
+          <a class="btn btn-primary" href="/app?mode=signup">Sign up free <span class="arrow" aria-hidden="true">→</span></a>
+          <a class="btn btn-line" href="/app?mode=login">Log in</a>
+        </div>
+        <p class="hero-note">2 free credits when you sign up. No card needed.</p>
+      </div>
+
+      <figure class="mock-wrap" style="margin:0">
+        <div class="mock" role="img" aria-label="A sample draft: a student emails a professor about her recent paper and asks to join her next field season. Notes show the paper, a talk and the student's resume as the sources of each detail.">
+          <div class="mock-top"><span class="label">Draft 1 of 3</span><span class="label">Email · 77 words</span></div>
+          <dl class="mock-fields">
+            <div><dt>To</dt><dd>Prof. Lena Ortiz</dd></div>
+            <div><dt>Subject</dt><dd>Your marsh sediment paper, and a question about fieldwork</dd></div>
+          </dl>
+          <div class="mock-body" aria-hidden="true">
+            <p>Hi Professor Ortiz,</p>
+            <p>I'm a second-year in environmental engineering. I read <span class="hl">your 2025 paper on restored marshes<sup>1</sup></span>, and the finding that small tidal channels trapped more sediment than the plantings surprised me. My fieldwork last summer assumed the opposite.</p>
+            <p>You mentioned <span class="hl">a follow-up field season<sup>2</sup></span> in your department talk. I'd love to help: <span class="hl">I've done core sampling and I'm comfortable in R<sup>3</sup></span>.</p>
+            <p>Would you have 15 minutes in the next two weeks to talk about it?</p>
+            <p style="margin:0">Thanks,<br>Maya</p>
+          </div>
+          <ol class="notes" aria-hidden="true">
+            <li><sup>1</sup>From her lab page and the paper's abstract</li>
+            <li><sup>2</sup>From a recorded department seminar</li>
+            <li><sup>3</sup>From your resume</li>
+          </ol>
+        </div>
+        <figcaption class="mock-caption">A sample draft. Every specific detail comes from a source you can check.</figcaption>
+      </figure>
+    </section>
+  </div>
+
+  <section class="band ruled" id="how" aria-labelledby="how-title">
+    <div class="page">
+      <div class="row"><div class="margin"><p class="label">How it works</p></div><div class="col">
+        <h2 class="h2" id="how-title">From a name to a draft you'd actually send</h2>
+      </div></div>
+      <div class="row"><div class="margin"></div><div class="col" style="max-width:none">
+        <ol class="steps">
+          <li><span class="n">01</span><h3 class="h3">Tell it who and why</h3><p>Enter a name or a link and what you're asking for: a research position, a referral, a coffee chat, a first meeting.</p></li>
+          <li><span class="n">02</span><h3 class="h3">It does the research</h3><p>Sociai reads public pages about them, like lab sites, papers, talks, company pages and news. It shows what it found and where, and you fix anything that's off.</p></li>
+          <li><span class="n">03</span><h3 class="h3">It drafts in your voice</h3><p>Drafts follow your writing samples and background. Ask for changes, edit it, then copy it and send it from your own email.</p></li>
+        </ol>
+      </div></div>
+    </div>
+  </section>
+
+  <section class="band ruled" id="who" aria-labelledby="who-title">
+    <div class="page">
+      <div class="row"><div class="margin"><p class="label">Who it's for</p></div><div class="col">
+        <h2 class="h2" id="who-title">For the emails where a template won't do</h2>
+      </div></div>
+      <div class="row"><div class="margin"></div><div class="col" style="max-width:none">
+        <ul class="who">
+          <li><p class="label">Professors</p><h3 class="h3">Research positions and lab spots</h3><p>Show you've read their work, not just their faculty page, and ask a question only their lab can answer.</p></li>
+          <li><p class="label">Recruiters</p><h3 class="h3">Referrals and roles</h3><p>A short note that knows the team and what it's building, with one clear ask.</p></li>
+          <li><p class="label">Alumni</p><h3 class="h3">Coffee chats and advice</h3><p>Find real common ground with someone a few years ahead, beyond "we went to the same school".</p></li>
+          <li><p class="label">Founders</p><h3 class="h3">Startup roles and first meetings</h3><p>Reference what they've shipped or said, and explain why you in a few lines.</p></li>
+        </ul>
+      </div></div>
+    </div>
+  </section>
+
+  <section class="band ruled" id="why" aria-labelledby="why-title">
+    <div class="page">
+      <div class="row"><div class="margin"><p class="label">Why it works</p></div><div class="col">
+        <h2 class="h2" id="why-title">Why the drafts get replies</h2>
+        <p class="band-intro">Every draft is shaped by real cold emails that got replies, and by what Sociai learned about the person you're writing to.</p>
+      </div></div>
+      <div class="row"><div class="margin"></div><div class="col" style="max-width:none">
+        <ul class="why">
+          <li><h3 class="h3">Specific, not flattering</h3><p>It mentions something real they did, so it can't be mistaken for a mass email.</p></li>
+          <li><h3 class="h3">Short, with one clear ask</h3><p>Easy to read on a phone and easy to say yes to.</p></li>
+          <li><h3 class="h3">In your voice</h3><p>Built from your own writing samples and background, so it reads like you wrote it.</p></li>
+          <li><h3 class="h3">You stay in control</h3><p>Nothing is sent for you. You review every line before it goes anywhere.</p></li>
+        </ul>
+      </div></div>
+    </div>
+  </section>
+
+  <section class="band ruled" id="pricing" aria-labelledby="pricing-title">
+    <div class="page">
+      <div class="row"><div class="margin"><p class="label">Pricing</p></div><div class="col">
+        <h2 class="h2" id="pricing-title">Pay per person you write to</h2>
+        <p class="band-intro">New accounts get 2 free credits. After that, buy a pack or go monthly.</p>
+      </div></div>
+      <div class="row"><div class="margin"></div><div class="col" style="max-width:none">
+        <div class="tiers">
+          <div class="tier">
+            <p class="label">Free to start</p>
+            <p class="price">$0</p>
+            <p class="credits">2 credits</p>
+            <p class="per">When you create an account</p>
+            <ul><li>Research on 2 people</li><li>Up to 3 drafts for each</li><li>No card needed</li></ul>
+            <a class="btn btn-line" href="/app?mode=signup">Sign up free</a>
+          </div>
+          <div class="tier">
+            <p class="label">Credit pack</p>
+            <p class="price">$14.99<small>one time</small></p>
+            <p class="credits">20 credits</p>
+            <p class="per">About $0.75 per person</p>
+            <ul><li>Pay once, no subscription</li><li>Good for a burst of outreach</li></ul>
+            <a class="btn btn-line" href="/app?mode=signup">Get started</a>
+          </div>
+          <div class="tier is-pick">
+            <p class="label">Monthly</p>
+            <p class="price">$11.99<small>/ month</small></p>
+            <p class="credits">30 credits every month</p>
+            <p class="per">About $0.40 per person</p>
+            <ul><li>Best value for steady outreach</li><li>Cancel anytime</li></ul>
+            <a class="btn btn-primary" href="/app?mode=signup">Get started</a>
+          </div>
+        </div>
+        <p class="credit-def"><b>One credit</b> = research on one person + up to 3 drafts for them. If a research run doesn't finish, you get the credit back.</p>
+      </div></div>
+    </div>
+  </section>
+
+  <section class="band ruled" id="faq" aria-labelledby="faq-title">
+    <div class="page">
+      <div class="row"><div class="margin"><p class="label">FAQ</p></div><div class="col">
+        <h2 class="h2" id="faq-title">Questions</h2>
+      </div></div>
+      <div class="row"><div class="margin"></div><div class="col">
+        <div class="faq">
+          <details>
+            <summary>Does Sociai send emails for me?</summary>
+            <p>No. Sociai only drafts. You copy the message and send it yourself, from your own email or account. Sociai never connects to your inbox.</p>
+          </details>
+          <details>
+            <summary>Can I cancel the monthly plan?</summary>
+            <p>Yes, anytime, from Account and billing in the app. Cancelling stops future charges, and credits already in your account stay there.</p>
+          </details>
+          <details>
+            <summary>What does a credit get me?</summary>
+            <p>One credit covers a research run on one person plus up to 3 drafts for them, and a revision counts as a draft. If you need more drafts, re-running the research costs 1 credit and adds 3 more. If research doesn't finish, the credit is refunded.</p>
+          </details>
+          <details>
+            <summary>Is my data private?</summary>
+            <p>Yes. Your profile, writing samples, resume and projects are visible only to you, and the database itself enforces that. We don't sell your data or share it for advertising, and you can delete your account and everything in it at any time. Details are in the <a class="link-btn" href="/privacy">Privacy Policy</a>.</p>
+          </details>
+        </div>
+      </div></div>
+    </div>
+  </section>
+
+  <div class="page">
+    <section class="closer" aria-labelledby="closer-title">
+      <div>
+        <h2 id="closer-title">Write the email you've been putting off.</h2>
+        <p>Start with 2 free credits. No card needed.</p>
+      </div>
+      <div class="actions">
+        <a class="btn btn-light" href="/app?mode=signup">Sign up free</a>
+        <a class="btn btn-outline" href="/app?mode=login">Log in</a>
+      </div>
+    </section>
+  </div>
+</main>
+
+<footer class="lp-foot"><div class="page lp-foot-inner">
+  <div>
+    <a class="brand" href="/" aria-label="Sociai home"><svg class="brand-mark" viewBox="0 0 232 216" aria-hidden="true"><path class="b-green" d="M0 216V124C0 82 34 49 76 49h21c41 0 75 33 75 75s-32 66-72 66H44c-20 0-34 10-44 26z"/><path class="b-tan" d="M135 0h62c19 0 35 16 35 35v47c0 38-31 70-70 70h-22c-39 0-70-32-70-70V65C70 29 99 0 135 0z"/><path class="b-star" d="M120 79c3 17 10 24 27 27-17 3-24 10-27 27-3-17-10-24-27-27 17-3 24-10 27-27z"/></svg><span class="brand-word">Socia<span class="brand-i">ı</span></span></a>
+    <p>Sociai drafts; you decide what to send.</p>
+  </div>
+  <nav aria-label="Footer">
+    <a href="mailto:supportsociai613@gmail.com">supportsociai613@gmail.com</a>
+    <a href="/terms">Terms</a>
+    <a href="/privacy">Privacy</a>
+  </nav>
+</div></footer>
+</body>
+</html>
