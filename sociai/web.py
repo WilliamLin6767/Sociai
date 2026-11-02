@@ -101,7 +101,10 @@ class Reject(Exception):
         self.code, self.extra = code, extra
 
 
-GENERIC_ERROR = "Something went wrong on the server. Try again, and let the Sociai team know if it keeps happening."
+SUPPORT_EMAIL = "supportsociai613@gmail.com"
+GENERIC_ERROR = f"Something went wrong on the server. Try again, and email {SUPPORT_EMAIL} if it keeps happening."
+CANCEL_FAILED = (f"Your account wasn't deleted: we couldn't cancel your monthly plan with Stripe, and we won't delete "
+                 f"an account that could still be charged. Try again in a minute, or email {SUPPORT_EMAIL}.")
 
 
 def public_error(e: Exception) -> str:
@@ -475,8 +478,11 @@ class Handler(BaseHTTPRequestHandler):
 
     def _profile(self):
         profile = supa.rpc_as(self._token, "sociai_get_profile")
-        if not profile:
-            raise SupabaseError("profile missing for a signed-in user")
+        if not profile:  # no profile row yet: create it with the sign-up rules, then read it
+            supa.rpc("sociai_ensure_profile", p_user=self._uid, p_email=self._email)
+            profile = supa.rpc_as(self._token, "sociai_get_profile")
+            if not profile:
+                raise SupabaseError(f"profile still missing for {self._uid}")
         return profile
 
     def _upload_resume(self, user, url):
@@ -496,8 +502,23 @@ class Handler(BaseHTTPRequestHandler):
         self._json(200, self._profile())
 
     def _delete_account(self, user):
-        """Remove the user's files, then the account; every table row goes with it (on delete cascade)."""
+        """Cancel any subscription, remove the user's files, then the account; every table row goes
+        with it (on delete cascade). If the subscription can't be cancelled, nothing is deleted."""
         uid = user["id"]
+        customer = supa.rpc("sociai_get_customer", p_user=uid).get("customer")
+        if customer:
+            if not billing:
+                print(f"[account] not deleting {uid}: has Stripe customer {customer} but payments are off "
+                      f"({billing_off_reason})", flush=True)
+                raise Reject(503, CANCEL_FAILED)
+            try:
+                cancelled = billing.cancel_subscriptions(customer)
+            except stripe.StripeError as e:
+                print(f"[stripe] couldn't cancel subscriptions of {customer} for {uid}: {type(e).__name__}: {e}", flush=True)
+                monitoring.capture(e)
+                raise Reject(502, CANCEL_FAILED)
+            if cancelled:
+                print(f"[stripe] cancelled {', '.join(cancelled)} for {uid} before deleting the account", flush=True)
         names = supa.list_files(RESUME_BUCKET, uid)
         supa.remove(RESUME_BUCKET, [f"{uid}/{n}" for n in names])
         supa.rpc("sociai_forget_user", p_user=uid)
@@ -534,7 +555,7 @@ class Handler(BaseHTTPRequestHandler):
         user = verify_token(token) if token else None
         if not user or not user.get("id"):
             raise Reject(401, "Please sign in.")
-        self._token = token
+        self._token, self._uid, self._email = token, user["id"], user.get("email")
         if not user.get("email") or not (user.get("email_confirmed_at") or user.get("confirmed_at")):
             raise Reject(403, "Confirm your email address before using Sociai.")
         return user
@@ -544,6 +565,8 @@ class Handler(BaseHTTPRequestHandler):
         account = supa.rpc("sociai_activate", p_user=user["id"], p_ip=self._client_ip(),
                            p_disposable=is_disposable(user["email"], settings.disposable_domains),
                            p_max_per_ip=settings.max_accounts_per_ip)
+        if account.get("error") == "no_user":  # the account was deleted while this token was still cached
+            raise Reject(401, "Please sign in.")
         if account.get("error"):
             raise SupabaseError(f"activate {user['id']}: {account}")
         if account.get("blocked_reason") and not allow_blocked:

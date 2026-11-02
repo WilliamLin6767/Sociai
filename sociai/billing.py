@@ -107,6 +107,23 @@ class Billing:
         subs = self.client.v1.subscriptions.list(params={"customer": customer, "status": "all", "limit": 10})
         return any(sub.status in SUBSCRIBED for sub in subs.data)
 
+    def cancel_subscriptions(self, customer):
+        """Cancel the customer's subscriptions right away, so nothing is charged after the account
+        is deleted. Returns the ids cancelled. A customer Stripe doesn't know (e.g. one saved in test
+        mode) has nothing to cancel. Other Stripe errors are raised."""
+        try:
+            subs = self.client.v1.subscriptions.list(params={"customer": customer, "status": "all", "limit": 100})
+        except stripe.InvalidRequestError as e:
+            if e.code == "resource_missing":
+                return []
+            raise
+        cancelled = []
+        for sub in subs.auto_paging_iter():
+            if sub.status in SUBSCRIBED:  # active, trialing, and past_due/unpaid (Stripe still retries those)
+                self.client.v1.subscriptions.cancel(sub.id)
+                cancelled.append(sub.id)
+        return cancelled
+
     def checkout_url(self, user_id, customer, plan):
         params = {
             "mode": PLANS[plan]["mode"],
