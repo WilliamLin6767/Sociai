@@ -2,7 +2,7 @@
 // single saved project. Views are plain functions that render into #main and return
 // a cleanup; store updates tell them what changed.
 
-import { store, useUser } from "./store.js";
+import { store } from "./store.js";
 import { accessToken, initAuth, onAuthChange, refreshSession, sendMagicLink, signOut } from "./auth.js";
 import { Loom, domain, normUrl } from "./loom.js";
 
@@ -199,25 +199,46 @@ const currentVersion = (p) => p.draft.versions[p.draft.current] || null;
 // Supabase access token; a 401 means the session has ended, so the sign-in screen returns.
 const account = { email: "", credits: null };
 
-async function api(path, body, retried = false) {
+async function request(method, path, body, { raw = null, contentType = null, retried = false } = {}) {
   const headers = {};
   const token = await accessToken();
   if (token) headers.Authorization = `Bearer ${token}`;
-  if (body !== undefined) headers["Content-Type"] = "application/json";
-  const res = await fetch(path, body === undefined ? { headers } : { method: "POST", headers, body: JSON.stringify(body) });
+  let payload;
+  if (raw) { payload = raw; headers["Content-Type"] = contentType || "application/octet-stream"; }
+  else if (body !== undefined) { payload = JSON.stringify(body); headers["Content-Type"] = "application/json"; }
+  const res = await fetch(path, { method, headers, body: payload });
   let data;
   try { data = await res.json(); } catch { data = { error: `The server answered with an error (${res.status}).` }; }
   if (res.status === 401) {
-    if (!retried && token && (await refreshSession())) return api(path, body, true);
+    if (!retried && token && (await refreshSession())) return request(method, path, body, { raw, contentType, retried: true });
     showSignIn({ message: "Your session ended. Sign in again to continue." });
   }
   if (typeof data?.credits === "number") setCredits(data.credits);
   return { http: res.status, data };
 }
+const api = (path, body) => request(body === undefined ? "GET" : "POST", path, body);
+
+// The user's saved profile: background, default format, writing samples, resume text.
+let profile = null;
+async function loadProfile() {
+  const { http, data } = await request("GET", "/api/profile");
+  if (http !== 200) throw new Error(data?.error || "Couldn't load your profile.");
+  profile = data;
+}
+
+async function saveBriefToProfile(b) {
+  const channel = CHANNELS.some(([v]) => v === b.channel) ? b.channel : undefined;
+  const words = Math.min(600, Math.max(40, Math.round(+b.max_words || 160)));
+  const r1 = await request("PUT", "/api/profile", { background: b.background, default_channel: channel, default_max_words: words });
+  const r2 = r1.http === 200 ? await request("PUT", "/api/profile/samples", { samples: b.samples }) : r1;
+  if (r2.http === 200) { profile = r2.data; flashSaved(true); return true; }
+  toast(r2.data?.error || "Couldn't save to your profile. Try again.");
+  return false;
+}
 
 const creditLabel = (n) => (n === null ? "…" : `${n} credit${n === 1 ? "" : "s"}`);
 const creditNote = () => account.credits === 0
-  ? "You're out of credits. Each credit covers one research run and up to 3 drafts."
+  ? 'You\'re out of credits. <a class="link-btn" href="#/pricing">Get more credits</a>'
   : `Uses 1 credit, which includes up to 3 drafts${account.credits === null ? "" : `. You have ${creditLabel(account.credits)}`}. Sociai never sends anything for you.`;
 
 function setCredits(n) {
@@ -229,7 +250,7 @@ function setCredits(n) {
     if (changed) { el.classList.remove("bump"); void el.offsetWidth; el.classList.add("bump"); }
   }
   const note = $("#credit-note");
-  if (note) note.textContent = creditNote();
+  if (note) note.innerHTML = creditNote();
 }
 
 async function refreshAccount() {
@@ -252,7 +273,10 @@ function toggleAccountMenu(btn) {
   btn.insertAdjacentHTML("afterend", `<div class="menu menu-down" role="menu">
     <p class="menu-head"><span class="label">Signed in as</span><span class="menu-email">${esc(account.email)}</span></p>
     <p class="menu-note">${creditLabel(account.credits)} left. One credit covers a research run plus up to 3 drafts or revisions for that person.</p>
-    <hr><button type="button" class="mi" role="menuitem" data-act="sign-out">Sign out</button></div>`);
+    <hr><a class="mi" role="menuitem" href="#/pricing">Buy credits</a>
+    <a class="mi" role="menuitem" href="#/account">Account and billing</a>
+    <a class="mi" role="menuitem" href="#/profile">Your profile</a>
+    <button type="button" class="mi" role="menuitem" data-act="sign-out">Sign out</button></div>`);
   $(".account .mi").focus();
 }
 
@@ -388,10 +412,10 @@ function poll(id, kind) {
   polling.set(key, setTimeout(tick, 250));
 }
 
-function failJob(id, kind, message) {
+function failJob(id, kind, message, action = null) {
   store.update(id, (p) => {
     const st = kind === "research" ? p.research : p.draft;
-    Object.assign(st, { status: "error", error: message, job: null });
+    Object.assign(st, { status: "error", error: message, errorAction: action, job: null });
     if (kind === "draft") st.pending = null;
   }, kind);
 }
@@ -406,11 +430,11 @@ async function startResearch(id) {
   }, "research");
   try {
     const { data } = await api("/api/research", { request: requestOf(store.get(id)), project_id: id });
-    if (data.error || !data.job) throw new Error(data.error || "The server didn't start the research.");
+    if (data.error || !data.job) throw Object.assign(new Error(data.error || "The server didn't start the research."), { action: data.action });
     store.update(id, (p) => { p.research.job = data.job; }, "edit");
     poll(id, "research");
   } catch (e) {
-    failJob(id, "research", e instanceof TypeError ? "Couldn't reach the Sociai server. Is it running?" : String(e.message || e));
+    failJob(id, "research", e instanceof TypeError ? "Couldn't reach the Sociai server. Is it running?" : String(e.message || e), e.action);
   }
 }
 
@@ -431,14 +455,14 @@ async function startDraft(id, { instruction = null, label = "First draft" } = {}
   store.update(id, (p) => { Object.assign(p.draft, { status: "running", error: null, job: null, pending: { label, threads, revise: !!body.revise } }); }, "draft");
   try {
     const { data } = await api("/api/draft", body);
-    if (data.error || !data.job) throw new Error(data.error || "The server didn't start the draft.");
+    if (data.error || !data.job) throw Object.assign(new Error(data.error || "The server didn't start the draft."), { action: data.action });
     store.update(id, (p) => {
       p.draft.job = data.job;
       if (typeof data.drafts_left === "number") p.draftsLeft = data.drafts_left;
     }, "edit");
     poll(id, "draft");
   } catch (e) {
-    failJob(id, "draft", e instanceof TypeError ? "Couldn't reach the Sociai server. Is it running?" : String(e.message || e));
+    failJob(id, "draft", e instanceof TypeError ? "Couldn't reach the Sociai server. Is it running?" : String(e.message || e), e.action);
   }
 }
 
@@ -460,6 +484,7 @@ function finishDraft(id, r) {
 let view = null; // { route, cleanup }
 
 function parseRoute() {
+  for (const page of ["profile", "pricing", "account"]) if (location.hash.startsWith(`#/${page}`)) return { view: page };
   const m = location.hash.match(/^#\/p\/([\w-]+)(?:\/(\w+))?/);
   return m ? { view: "project", id: m[1], stage: m[2] } : { view: "desk" };
 }
@@ -475,11 +500,17 @@ function direction(a, b) {
   return d > 0 ? "forward" : d < 0 ? "back" : "same";
 }
 
+// Set once the account's projects and profile have loaded. Until then nothing renders: signing
+// in from a magic link changes the URL hash, and that hashchange mustn't show a half-loaded desk.
+let ready = false;
+
 function render({ instant = false } = {}) {
+  if (!ready) return;
   const route = parseRoute();
   let p = null;
   if (route.view === "project") {
     p = store.get(route.id);
+    if (!p && store.summary(route.id)) return openSaved(route);
     if (!p) { history.replaceState(null, "", "#/"); return render({ instant }); }
     if (!route.stage || !available(p).includes(route.stage)) {
       route.stage = resumeStage(p);
@@ -492,7 +523,8 @@ function render({ instant = false } = {}) {
     closePop(); closeDrawer(); closeMenus();
     document.body.classList.remove("focus-on");
     renderBar(route, p);
-    const fn = route.view === "desk" ? deskView : VIEWS[route.stage];
+    resetMain();
+    const fn = PAGES[route.view] || VIEWS[route.stage];
     view = { route, cleanup: fn(p, from) };
     if (!instant) { window.scrollTo(0, 0); focusMain(route); }
   };
@@ -505,6 +537,28 @@ function render({ instant = false } = {}) {
     delete document.documentElement.dataset.dir;
     $$("[data-vt]").forEach((el) => { el.style.viewTransitionName = ""; el.removeAttribute("data-vt"); });
   });
+}
+
+// A project saved in the account but not opened yet in this session: fetch it, then show it.
+function openSaved(route) {
+  view?.cleanup?.();
+  view = { route: { view: "loading" }, cleanup: null };
+  closePop(); closeDrawer(); closeMenus();
+  resetMain();
+  renderBar({ view: "loading" }, null);
+  $("#main").innerHTML = `<div class="page"><p class="opening" role="status">Opening ${esc(store.summary(route.id)?.name || "your project")}…</p></div>`;
+  store.load(route.id).then(
+    () => { if (parseRoute().id === route.id) render({ instant: true }); },
+    () => { toast("Couldn't open that project. It may have been deleted."); go("#/"); },
+  );
+}
+
+// Each view adds its own listeners to #main. A fresh element per view drops the previous
+// view's listeners, so they never pile up as the user moves around.
+function resetMain() {
+  const old = $("#main");
+  const fresh = old.cloneNode(false);
+  old.replaceWith(fresh);
 }
 
 function focusMain(route) {
@@ -546,18 +600,21 @@ function renderBar(route, p) {
   $("#bar").innerHTML = `<div class="page bar-inner">
     <a class="brand" href="#/" aria-label="Sociai: your desk">${MARK}<span class="brand-word">Sociai</span></a>
     ${p ? `<div class="crumb"><span class="crumb-sep" aria-hidden="true">/</span><span class="crumb-who" id="crumb-who">${esc(nameOf(p))}</span><span class="crumb-goal" id="crumb-goal">${esc(p.brief.goal)}</span></div>
-      <div id="nav-slot">${threadNav(p, route.stage)}</div>` : '<div class="crumb"></div>'}
-    <div class="bar-end">${p ? '<span class="saved" id="saved" title="Saved in this browser"><span>Saved</span></span>' : ""}${accountButton()}${themeButton()}</div>
+      <div id="nav-slot">${threadNav(p, route.stage)}</div>`
+      : PAGE_TITLES[route.view] ? `<div class="crumb"><span class="crumb-sep" aria-hidden="true">/</span><span class="crumb-who">${PAGE_TITLES[route.view]}</span></div>`
+      : '<div class="crumb"></div>'}
+    <div class="bar-end">${p || route.view === "profile" ? '<span class="saved" id="saved" title="Saved to your account"><span>Saved</span></span>' : ""}${accountButton()}${themeButton()}</div>
   </div>`;
 }
 
-store.onSaved((ok) => {
+function flashSaved(ok) {
   const el = $("#saved");
   if (!el) return;
   el.classList.toggle("is-failed", !ok);
   el.querySelector("span").textContent = ok ? "Saved" : "Not saved";
   if (ok) { el.classList.remove("is-fresh"); void el.offsetWidth; el.classList.add("is-fresh"); }
-});
+}
+store.onSaved(flashSaved);
 
 store.on((id, part) => {
   if (part === "external") return isTyping(document.activeElement) ? null : render({ instant: true });
@@ -709,14 +766,14 @@ function composerHTML(b, mode) {
       </div>
     </div>
     <div class="row">
-      <div class="margin">${lbl("04", "About you", "f-bg")}<p class="margin-note">Optional. Helps Sociai find real common ground.</p></div>
+      <div class="margin">${lbl("04", "About you", "f-bg")}<p class="margin-note">Optional. Helps Sociai find real common ground. <a class="link-btn" href="#/profile">Edit your profile</a></p></div>
       <div class="col">
         <textarea class="textarea" id="f-bg" name="background" rows="3" placeholder="${esc(pur.about)}">${esc(b.background)}</textarea>
-        ${isNew && b.background && b.background === store.profile.background ? '<p class="profile-note">Remembered from your last outreach</p>' : ""}
+        ${isNew && profile && b.background && b.background === profile.background ? '<p class="profile-note">From your profile</p>' : ""}
       </div>
     </div>
     <div class="row">
-      <div class="margin">${lbl("05", "Your voice")}<p class="margin-note">Optional. Paste up to three things you've written so the draft sounds like you.</p></div>
+      <div class="margin">${lbl("05", "Your voice")}<p class="margin-note">Optional. A few things you've written, so the draft sounds like you.</p></div>
       <div class="col"><div class="samples" id="samples"></div>
         <button type="button" class="link-btn" data-act="add-sample" id="add-sample" style="margin-top:10px">Add a writing sample</button></div>
     </div>
@@ -730,6 +787,10 @@ function composerHTML(b, mode) {
           <input class="input num-input" id="f-words" type="number" min="40" max="600" step="10" value="${esc(b.max_words)}"></div></div>
       </div>
     </div>
+    <div class="row" id="save-profile-row" hidden><div class="margin"></div><div class="col save-profile">
+      <button type="button" class="link-btn" data-act="save-profile">Save these details to your profile</button>
+      <span class="muted">Your background, writing samples and format become the starting point for new outreach.</span>
+    </div></div>
   </div></div>
   ${isNew ? `<div class="row"><div class="margin"></div><div class="col composer-actions">
       ${primary("Begin research", "begin")}
@@ -739,7 +800,8 @@ function composerHTML(b, mode) {
 
 function mountComposer(root, { brief, mode, onChange, onSubmit }) {
   const b = brief;
-  const touched = new Set(mode === "edit" ? ["channel", "words"] : []);
+  // Format defaults from the profile win over a purpose's suggestions.
+  const touched = new Set(mode === "edit" || profile ? ["channel", "words"] : []);
   const f = { target: $("#f-target", root), goal: $("#f-goal", root), bg: $("#f-bg", root), words: $("#f-words", root) };
   const unfold = $("#unfold", root);
   const open = (instant) => {
@@ -749,7 +811,12 @@ function mountComposer(root, { brief, mode, onChange, onSubmit }) {
     if (instant) requestAnimationFrame(() => (unfold.style.transition = ""));
   };
   if (mode === "edit" || b.target || b.category) open(true);
-  const changed = () => onChange?.(b);
+  const sameSamples = (list) => JSON.stringify(list.map((x) => x.trim()).filter(Boolean));
+  const differsFromProfile = () => profile && (b.background.trim() !== profile.background.trim()
+    || b.channel !== profile.default_channel || +b.max_words !== profile.default_max_words
+    || sameSamples(b.samples) !== sameSamples(profile.samples.map((x) => x.body)));
+  const showSaveProfile = () => { $("#save-profile-row", root).hidden = !differsFromProfile(); };
+  const changed = () => { onChange?.(b); showSaveProfile(); };
 
   const renderSamples = () => {
     const host = $("#samples", root);
@@ -757,7 +824,7 @@ function mountComposer(root, { brief, mode, onChange, onSubmit }) {
       <label class="vh" for="sample-${i}">Writing sample ${i + 1}</label>
       <textarea class="textarea" id="sample-${i}" data-sample="${i}" placeholder="Paste an email, post or message you wrote">${esc(s)}</textarea>
       <button type="button" class="icon-btn" data-act="remove-sample" data-i="${i}" aria-label="Remove sample ${i + 1}">${I.x}</button></div>`).join("");
-    $("#add-sample", root).hidden = b.samples.length >= 3;
+    $("#add-sample", root).hidden = b.samples.length >= 10;
     $("#add-sample", root).textContent = b.samples.length ? "Add another sample" : "Add a writing sample";
   };
   renderSamples();
@@ -838,6 +905,10 @@ function mountComposer(root, { brief, mode, onChange, onSubmit }) {
       if (pur.id === "other" || /^(a|an|someone)\b/i.test(pur.who)) { f.target.focus(); return; }
       b.target = pur.who; f.target.value = pur.who; f.target.focus(); open(); changed();
     } else if (act === "begin") { if (validate()) onSubmit(b); }
+    else if (act === "save-profile") {
+      a.disabled = true;
+      saveBriefToProfile(b).then((ok) => { a.disabled = false; if (ok) { showSaveProfile(); toast("Saved to your profile."); } });
+    }
   });
   root.addEventListener("keydown", (e) => {
     const radio = e.target.closest("[data-act='purpose']");
@@ -854,6 +925,7 @@ function mountComposer(root, { brief, mode, onChange, onSubmit }) {
       if (mode === "new" && b.goal.trim()) onSubmit(b); else f.goal.focus();
     }
   });
+  showSaveProfile();
   return { validate, brief: b };
 }
 
@@ -871,14 +943,49 @@ function ago(t) {
   return new Date(t).toLocaleDateString(undefined, { month: "short", day: "numeric" });
 }
 
+let importHidden = false;
+
+function importBannerHTML() {
+  if (importHidden || store.importDismissed) return "";
+  const n = store.localProjects().length, prof = store.localProfile();
+  if (!n && !prof) return "";
+  const what = n ? plural(n, "project") : "Your saved background and writing samples";
+  return `<div class="row import-row"><div class="margin"><p class="label">From this browser</p></div><div class="col">
+    <div class="import-banner" role="region" aria-label="Import from this browser">
+    <p><b>${what}</b> from before accounts ${n === 1 ? "is" : "are"} still saved in this browser only. Add ${n === 1 ? "it" : "them"} to your account so ${n === 1 ? "it's" : "they're"} available wherever you sign in.</p>
+    <div class="gate-actions"><button type="button" class="btn btn-primary btn-sm" data-act="import-local">Import ${n ? plural(n, "project") : "them"}</button>
+      <button type="button" class="btn btn-ghost btn-sm" data-act="import-later">Not now</button>
+      <button type="button" class="link-btn" data-act="import-never">Don't ask again</button></div></div></div></div>`;
+}
+
+async function importLocal() {
+  const projects = store.localProjects(), prof = store.localProfile();
+  store.importProjects(projects);
+  if (prof && !profile.background && !profile.samples.length) {
+    await saveBriefToProfile({ background: prof.background || "", samples: prof.samples || [], channel: profile.default_channel, max_words: profile.default_max_words });
+  }
+  store.forgetLocal();
+  toast(projects.length ? `Imported ${plural(projects.length, "project")} into your account.` : "Imported your saved details into your profile.");
+  render({ instant: true });
+}
+
+const summarize = (p) => ({
+  name: nameOf(p), target: p.brief.target || "", goal: p.brief.goal || "", category: p.brief.category || "",
+  headline: p.research.dossier?.headline || "", state: stateOf(p), stages: available(p), resume: resumeStage(p),
+  running: p.research.status === "running" || p.draft.status === "running",
+});
+
 function deskView(_, from) {
   const all = store.list();
-  const profile = store.profile;
-  const brief = store.pending || { target: "", category: "", goal: "", background: profile.background || "", samples: [...(profile.samples || [])], channel: "email", max_words: 160 };
+  const brief = store.pending || {
+    target: "", category: "", goal: "", background: profile?.background || "", samples: (profile?.samples || []).map((x) => x.body),
+    channel: profile?.default_channel || "email", max_words: profile?.default_max_words || 160,
+  };
   $("#main").innerHTML = `<div class="ruled"><div class="page">
+    ${importBannerHTML()}
     <form class="composer" id="composer" novalidate>${composerHTML(brief, "new")}</form>
     ${all.length ? `<section class="ledger" aria-labelledby="ledger-title">
-      <div class="row"><div class="margin"><h2 class="label" id="ledger-title">Correspondence</h2><p class="margin-note">Everything you've started, newest first. Saved in this browser.</p></div>
+      <div class="row"><div class="margin"><h2 class="label" id="ledger-title">Correspondence</h2><p class="margin-note">Everything you've started, newest first. Saved to your account.</p></div>
         <div class="col" style="max-width:none">
           <div class="ledger-tools">
             <label class="search"><span class="vh">Search outreach</span>${I.search}<input class="input" type="search" id="ledger-q" placeholder="Search people and goals" value="${esc(deskState.query)}"><span class="kbd" aria-hidden="true">/</span></label>
@@ -899,10 +1006,9 @@ function deskView(_, from) {
     onSubmit: (b) => {
       if (account.credits === 0) {
         $("#credit-note").classList.add("is-warn");
-        return toast("You're out of credits, so a new research run can't start.");
+        return toast("You're out of credits, so a new research run can't start.", { action: { label: "Get credits", fn: () => go("#/pricing") } });
       }
       const clean = { ...b, samples: b.samples.filter((s) => s.trim()) };
-      store.saveProfile({ background: clean.background, samples: clean.samples });
       const p = store.create(clean);
       store.setPending(null);
       startResearch(p.id);
@@ -910,32 +1016,43 @@ function deskView(_, from) {
     },
   });
 
+  $("#main").addEventListener("click", (e) => {
+    const a = e.target.closest("[data-act^='import-']");
+    if (!a) return;
+    if (a.dataset.act === "import-local") { a.disabled = true; importLocal(); }
+    else {
+      if (a.dataset.act === "import-never") store.dismissImport();
+      importHidden = true;
+      $(".import-row")?.remove();
+    }
+  });
+
   if (!all.length) return () => {};
   const rows = $("#rows"), filters = $("#filters");
   const drawRows = () => {
     const list = store.list();
     const counts = Object.fromEntries(FILTERS.map(([k]) => [k, 0]));
-    list.forEach((p) => { counts.all++; counts[stateOf(p).key] = (counts[stateOf(p).key] || 0) + 1; });
+    list.forEach((p) => { counts.all++; counts[p.state.key] = (counts[p.state.key] || 0) + 1; });
     filters.innerHTML = FILTERS.filter(([k]) => k === "all" || counts[k]).map(([k, l]) =>
       `<button type="button" class="filter" data-act="filter" data-k="${k}" aria-pressed="${deskState.filter === k}">${l} <span class="n">${counts[k]}</span></button>`).join("");
     const q = deskState.query.trim().toLowerCase();
-    const shown = list.filter((p) => (deskState.filter === "all" || stateOf(p).key === deskState.filter)
-      && (!q || [nameOf(p), p.brief.target, p.brief.goal, p.research.dossier?.headline].join(" ").toLowerCase().includes(q)));
+    const shown = list.filter((p) => (deskState.filter === "all" || p.state.key === deskState.filter)
+      && (!q || [p.name, p.target, p.goal, p.headline].join(" ").toLowerCase().includes(q)));
     rows.innerHTML = shown.map((p) => {
-      const st = stateOf(p), av = available(p), cur = resumeStage(p);
-      const pur = PURPOSES.find((x) => x.id === p.brief.category);
+      const st = p.state, av = p.stages || [], cur = p.resume || "recipient";
+      const pur = PURPOSES.find((x) => x.id === p.category);
       return `<li class="entry" data-id="${p.id}">
         <a class="entry-link" href="#/p/${p.id}" data-act="open" data-id="${p.id}">
           <span class="mini" aria-hidden="true">${STAGES.map((s) => `<i class="${s === cur ? "cur" : av.includes(s) ? "on" : ""}"></i>`).join("")}</span>
-          <span class="who"><span class="entry-name">${esc(nameOf(p))}</span>
-            <span class="entry-role">${esc(p.research.dossier?.headline || (p.research.status === "running" ? "Researching…" : "Not researched yet"))}</span></span>
-          <span class="entry-goal">${pur ? `<span class="tag">${esc(pur.label)}</span>` : ""}${esc(p.brief.goal)}</span>
+          <span class="who"><span class="entry-name">${esc(p.name)}</span>
+            <span class="entry-role">${esc(p.headline || (p.running ? "Researching…" : "Not researched yet"))}</span></span>
+          <span class="entry-goal">${pur ? `<span class="tag">${esc(pur.label)}</span>` : ""}${esc(p.goal)}</span>
           <span class="entry-state ${st.cls || ""}">${st.text}</span>
           <time class="entry-time" datetime="${new Date(p.updatedAt).toISOString()}">${ago(p.updatedAt)}</time>
           <span class="entry-go" aria-hidden="true">${I.arrow}</span>
           <span class="vh">, open at ${STAGE_LABEL[cur]}</span>
         </a>
-        <button type="button" class="icon-btn entry-del" data-act="delete" data-id="${p.id}" aria-label="Delete outreach to ${esc(nameOf(p))}">${I.trash}</button>
+        <button type="button" class="icon-btn entry-del" data-act="delete" data-id="${p.id}" aria-label="Delete outreach to ${esc(p.name)}">${I.trash}</button>
       </li>`;
     }).join("") || `<li class="empty">${q ? `Nothing matches “${esc(deskState.query)}”.` : "Nothing at this stage."}</li>`;
   };
@@ -957,8 +1074,11 @@ function deskView(_, from) {
       const nm = $(".entry-name", a);
       nm.style.viewTransitionName = "who"; nm.dataset.vt = "1";
     } else if (a.dataset.act === "delete") {
-      const gone = store.remove(a.dataset.id);
-      toast(`Deleted “${nameOf(gone)}”`, { action: { label: "Undo", fn: () => store.restore(gone) }, ms: 7000 });
+      a.disabled = true;
+      store.remove(a.dataset.id).then(
+        (gone) => toast(`Deleted “${nameOf(gone)}”`, { action: { label: "Undo", fn: () => store.restore(gone) }, ms: 7000 }),
+        () => { a.disabled = false; toast("Couldn't delete that project. Try again."); },
+      );
     }
   });
   const off = store.on((id, part) => { if (part !== "edit" && part !== "research-events") drawRows(); });
@@ -1108,7 +1228,7 @@ function researchView(p) {
     const secs = ((r.finishedAt || Date.now()) - (r.startedAt || Date.now())) / 1000;
     $("#elapsed").textContent = r.status === "running" ? mmss(secs) : r.status === "done" ? `Took ${mmss(secs)}` : "";
     if (r.status === "error") {
-      extra.innerHTML = `<div class="failure" role="alert"><p>${r.events.length ? "The research stopped before it finished." : "The research didn't start."} ${r.dossier ? "Your earlier research is still there." : "Nothing was lost from your brief."}</p><code>${esc(r.error)}</code></div>`;
+      extra.innerHTML = `<div class="failure" role="alert"><p>${r.events.length ? "The research stopped before it finished." : "The research didn't start."} ${r.dossier ? "Your earlier research is still there." : "Nothing was lost from your brief."}</p><code>${esc(r.error)}</code>${r.errorAction === "pricing" ? `<div class="actions"><a class="btn btn-primary btn-sm" href="#/pricing">Get more credits</a></div>` : ""}</div>`;
     } else if (r.status === "running" && secs > 150) {
       extra.innerHTML = `<p class="notice">This is taking longer than usual. It's still working on the server.</p>`;
     } else if (r.status === "running" && secs > 40) {
@@ -1574,8 +1694,311 @@ function draftView(p) {
   return () => { off(); document.removeEventListener("keydown", onKey); removeEventListener("resize", onResize); document.body.classList.remove("focus-on"); };
 }
 
+/* ───────── Profile ───────── */
+
+const RESUME_TYPES = /\.(pdf|docx)$/i;
+const MAX_RESUME = 5 * 1024 * 1024;
+
+function profileView() {
+  const pr = profile;
+  const samples = pr.samples.map((x) => x.body);
+  $("#main").innerHTML = `<div class="ruled"><div class="page"><div class="composer profile-page">
+    <div class="row lead"><div class="margin"><p class="label">Profile</p></div><div class="col">
+      <h1 class="h2" data-focus-on-enter>Your profile</h1>
+      <p class="field-hint">Sociai starts every new outreach from these. You can still change them for one message without touching your profile. Changes save as you type.</p>
+    </div></div>
+    <div class="row"><div class="margin"><label class="label" for="pf-bg"><span class="n">01</span>&nbsp; About you</label>
+      <p class="margin-note">Who you are and what you've done, in your words. Sociai uses it to find real common ground.</p></div>
+      <div class="col"><textarea class="textarea" id="pf-bg" rows="5" placeholder="e.g. CS junior at Stanford; built a small benchmark for LLM reasoning; interned at Plaid">${esc(pr.background)}</textarea></div></div>
+    <div class="row"><div class="margin"><p class="label"><span class="n">02</span>&nbsp; Defaults</p><p class="margin-note">The format new outreach starts with.</p></div>
+      <div class="col format">
+        <div><span class="label">Channel</span><div class="choices" role="radiogroup" aria-label="Default channel">${CHANNELS.map(([v, l]) =>
+          `<button type="button" class="choice choice-sm" role="radio" aria-checked="${pr.default_channel === v}" data-act="pf-channel" data-v="${v}">${l}</button>`).join("")}</div></div>
+        <div><label class="label" for="pf-words">Length · words</label><div class="length">${LENGTHS.map(([v, l]) =>
+          `<button type="button" class="choice choice-sm" aria-pressed="${pr.default_max_words === v}" data-act="pf-length" data-v="${v}">${l}</button>`).join("")}
+          <input class="input num-input" id="pf-words" type="number" min="40" max="600" step="10" value="${pr.default_max_words}"></div></div>
+      </div></div>
+    <div class="row"><div class="margin"><p class="label"><span class="n">03</span>&nbsp; Writing samples</p>
+      <p class="margin-note">Emails or posts you wrote yourself. At least 2 help drafts match your voice.</p></div>
+      <div class="col"><div class="samples" id="pf-samples"></div>
+        <div class="sample-foot"><button type="button" class="link-btn" data-act="pf-add-sample" id="pf-add-sample">Add a writing sample</button><span class="sample-meter" id="pf-meter"></span></div></div></div>
+    <div class="row"><div class="margin"><p class="label"><span class="n">04</span>&nbsp; Resume</p>
+      <p class="margin-note">PDF or Word (.docx), up to 5 MB. Sociai uses only the details that help a given message.</p></div>
+      <div class="col">
+        <div class="resume-file" id="pf-file"></div>
+        <input type="file" id="pf-resume" class="vh" tabindex="-1" accept=".pdf,.docx,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document">
+        <p class="field-error" id="pf-resume-err" hidden></p>
+        <label class="label" for="pf-resume-text" style="display:block;margin-top:16px">Text Sociai uses</label>
+        <textarea class="textarea" id="pf-resume-text" rows="10" placeholder="Upload a resume, or paste its text here.">${esc(pr.resume_text)}</textarea>
+        <p class="field-hint">Check what came out of the file and fix anything that's wrong. Drafts use this text, never the file itself.</p>
+      </div></div>
+    <div class="row"><div class="margin"><p class="label"><span class="n">05</span>&nbsp; Privacy</p></div>
+      <div class="col danger-zone">
+        <p>Your profile, writing samples, resume and projects are stored in your Sociai account (on Supabase), so they're there wherever you sign in.</p>
+        <button type="button" class="btn btn-danger" data-act="pf-delete">Delete my account and data</button>
+        <div class="confirm-delete" id="pf-confirm" hidden>
+          <p>This permanently deletes your profile, writing samples, resume and every project, and signs you out. Unused credits are lost. It can't be undone.</p>
+          <label class="label" for="pf-confirm-input">Type DELETE to confirm</label>
+          <input class="input" id="pf-confirm-input" autocomplete="off" autocapitalize="characters" spellcheck="false">
+          <div class="gate-actions"><button type="button" class="btn btn-danger is-solid" data-act="pf-confirm-delete" disabled>Delete everything</button>
+            <button type="button" class="btn btn-ghost" data-act="pf-cancel-delete">Cancel</button></div>
+        </div>
+      </div></div>
+  </div></div></div>`;
+
+  const root = $("#main");
+  const fields = () => ({
+    background: $("#pf-bg").value, resume_text: $("#pf-resume-text").value,
+    default_channel: $("[data-act='pf-channel'][aria-checked='true']")?.dataset.v,
+    default_max_words: Math.min(600, Math.max(40, Math.round(+$("#pf-words").value || 160))),
+  });
+  const timers = {};
+  const later = (name, fn, ms) => { clearTimeout(timers[name]); timers[name] = setTimeout(() => { delete timers[name]; fn(); }, ms); };
+  const now = () => { for (const [name, t] of Object.entries(timers)) { clearTimeout(t); delete timers[name]; (name === "fields" ? saveFields : saveSamples)(); } };
+  const saveFields = async () => {
+    const { http, data } = await request("PUT", "/api/profile", fields());
+    if (http === 200) profile = data; else toast(data?.error || "Couldn't save your profile.");
+    flashSaved(http === 200);
+  };
+  const saveSamples = async () => {
+    const { http, data } = await request("PUT", "/api/profile/samples", { samples });
+    if (http === 200) profile = data; else toast(data?.error || "Couldn't save your writing samples.");
+    flashSaved(http === 200);
+  };
+
+  const drawSamples = () => {
+    $("#pf-samples").innerHTML = samples.map((x, i) => `<div class="sample">
+      <label class="vh" for="pf-sample-${i}">Writing sample ${i + 1}</label>
+      <textarea class="textarea" id="pf-sample-${i}" data-pf-sample="${i}" rows="5" placeholder="Paste an email, post or message you wrote">${esc(x)}</textarea>
+      <button type="button" class="icon-btn" data-act="pf-remove-sample" data-i="${i}" aria-label="Delete sample ${i + 1}">${I.x}</button></div>`).join("");
+    drawMeter();
+  };
+  const drawMeter = () => {
+    const n = samples.filter((x) => x.trim()).length;
+    $("#pf-meter").className = "sample-meter" + (n < 2 ? " is-low" : "");
+    $("#pf-meter").textContent = n >= 2 ? `${plural(n, "sample")} saved` : `${n} of 2 recommended`;
+    $("#pf-add-sample").hidden = samples.length >= 10;
+    $("#pf-add-sample").textContent = samples.length ? "Add another sample" : "Add a writing sample";
+  };
+  const drawFile = () => {
+    const pf = profile;
+    $("#pf-file").innerHTML = pf.resume_filename
+      ? `<span class="file-name">${esc(pf.resume_filename)}</span><span class="muted">uploaded ${ago(Date.parse(pf.resume_updated_at))}</span>
+         <button type="button" class="btn btn-line btn-sm" data-act="pf-pick">Replace</button>
+         <button type="button" class="btn btn-ghost btn-sm" data-act="pf-remove-resume">Remove</button>`
+      : `<button type="button" class="btn btn-line btn-sm" data-act="pf-pick">Upload resume</button><span class="muted">PDF or .docx</span>`;
+  };
+  drawSamples();
+  drawFile();
+
+  const resumeError = (msg) => { const el = $("#pf-resume-err"); el.textContent = msg || ""; el.hidden = !msg; };
+  $("#pf-resume").addEventListener("change", async (e) => {
+    const file = e.target.files[0];
+    e.target.value = "";
+    if (!file) return;
+    if (!RESUME_TYPES.test(file.name)) return resumeError("Upload your resume as a PDF or a Word (.docx) file.");
+    if (file.size > MAX_RESUME) return resumeError("Resumes can be up to 5 MB.");
+    resumeError("");
+    $("#pf-file").innerHTML = `<span class="muted" role="status">Reading ${esc(file.name)}…</span>`;
+    const { http, data } = await request("POST", `/api/profile/resume?filename=${encodeURIComponent(file.name)}`, undefined,
+      { raw: file, contentType: file.type || "application/octet-stream" });
+    if (http === 200) {
+      profile = data;
+      $("#pf-resume-text").value = data.resume_text;
+      toast("Resume read. Check the text below.");
+      flashSaved(true);
+    } else resumeError(data?.error || "Couldn't read that file.");
+    drawFile();
+  });
+
+  root.addEventListener("input", (e) => {
+    const t = e.target;
+    if (t.dataset.pfSample !== undefined) { samples[+t.dataset.pfSample] = t.value; drawMeter(); later("samples", saveSamples, 800); }
+    else if (t.id === "pf-bg" || t.id === "pf-resume-text") later("fields", saveFields, 600);
+    else if (t.id === "pf-words") {
+      $$("[data-act='pf-length']").forEach((el) => el.setAttribute("aria-pressed", String(+el.dataset.v === +t.value)));
+      later("fields", saveFields, 600);
+    } else if (t.id === "pf-confirm-input") $("[data-act='pf-confirm-delete']").disabled = t.value.trim() !== "DELETE";
+  });
+  root.addEventListener("click", async (e) => {
+    const a = e.target.closest("[data-act]");
+    if (!a) return;
+    const act = a.dataset.act;
+    if (act === "pf-channel") {
+      $$("[data-act='pf-channel']").forEach((el) => el.setAttribute("aria-checked", String(el === a)));
+      later("fields", saveFields, 0);
+    } else if (act === "pf-length") {
+      $("#pf-words").value = a.dataset.v;
+      $$("[data-act='pf-length']").forEach((el) => el.setAttribute("aria-pressed", String(el === a)));
+      later("fields", saveFields, 0);
+    } else if (act === "pf-add-sample") {
+      samples.push(""); drawSamples(); $(`#pf-sample-${samples.length - 1}`).focus();
+    } else if (act === "pf-remove-sample") {
+      samples.splice(+a.dataset.i, 1); drawSamples(); later("samples", saveSamples, 0);
+    } else if (act === "pf-pick") $("#pf-resume").click();
+    else if (act === "pf-remove-resume") {
+      const { http, data } = await request("DELETE", "/api/profile/resume");
+      if (http === 200) { profile = data; $("#pf-resume-text").value = ""; drawFile(); toast("Resume removed."); }
+      else toast(data?.error || "Couldn't remove your resume.");
+    } else if (act === "pf-delete") {
+      $("#pf-confirm").hidden = false; $("#pf-confirm-input").focus();
+    } else if (act === "pf-cancel-delete") {
+      $("#pf-confirm").hidden = true; $("#pf-confirm-input").value = ""; a.closest(".danger-zone").querySelector("[data-act='pf-delete']").focus();
+    } else if (act === "pf-confirm-delete") {
+      a.disabled = true;
+      a.textContent = "Deleting…";
+      const { http, data } = await request("DELETE", "/api/account", { confirm: "DELETE" });
+      if (http !== 200) { a.disabled = false; a.textContent = "Delete everything"; return toast(data?.error || "Couldn't delete your account. Try again."); }
+      store.clearBrowserData();
+      try { sessionStorage.setItem("sociai.deleted", "1"); } catch {}
+      await signOut("local").catch(() => {});
+      location.replace(location.pathname);
+    }
+  });
+  return now; // leaving the page saves anything still waiting
+}
+
+/* ───────── Pricing and account ───────── */
+
+const REASONS = {
+  signup_bonus: "Welcome credits", research: "Research run", refund: "Refund: research didn't finish",
+  purchase_pack: "20-credit pack", subscription_credits: "Monthly plan", manual_grant: "Added by Sociai",
+};
+const PURCHASES = new Set(["purchase_pack", "subscription_credits"]);
+const ZERO_DECIMAL = new Set(["bif", "clp", "djf", "gnf", "jpy", "kmf", "krw", "mga", "pyg", "rwf", "ugx", "vnd", "vuv", "xaf", "xof", "xpf"]);
+const money = (amount, currency) => amount == null ? "" : new Intl.NumberFormat(undefined, { style: "currency", currency: currency.toUpperCase() })
+  .format(ZERO_DECIMAL.has(currency) ? amount : amount / 100);
+const longDate = (iso) => new Date(iso).toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" });
+
+async function openStripe(btn, path, body) {
+  const label = btn.innerHTML;
+  btn.disabled = true;
+  btn.textContent = path === "/api/checkout" ? "Opening checkout…" : "Opening Stripe…";
+  const { http, data } = await request("POST", path, body);
+  if (http === 200 && data.url) {
+    if (path === "/api/checkout") { try { sessionStorage.setItem("sociai.checkoutAt", String(Date.now())); } catch {} }
+    return location.assign(data.url);
+  }
+  btn.disabled = false;
+  btn.innerHTML = label;
+  toast(data?.error || "Couldn't open Stripe. Try again.");
+}
+
+function pricingView() {
+  $("#main").innerHTML = `<div class="ruled"><div class="page stack">
+    <div class="row lead"><div class="margin"><p class="label">Pricing</p></div><div class="col">
+      <h1 class="h2" data-focus-on-enter>More credits</h1>
+      <p class="field-hint">Each credit covers one research run plus up to 3 drafts or revisions for that person. You have <b>${creditLabel(account.credits)}</b>.</p>
+    </div></div>
+    <div class="row"><div class="margin"></div><div class="col" id="pr-plans"><p class="opening" role="status">Loading prices…</p></div></div>
+  </div></div>`;
+  let alive = true;
+  request("GET", "/api/pricing").then(({ http, data }) => {
+    if (!alive) return;
+    const host = $("#pr-plans");
+    if (http !== 200 || !data.enabled) {
+      host.innerHTML = `<p class="empty">Buying credits isn't available yet.</p>`;
+      return;
+    }
+    const { pack, monthly } = data.plans;
+    host.innerHTML = `
+      ${data.test_mode ? `<p class="test-note"><b>Test mode:</b> no real charges. Pay with card 4242 4242 4242 4242, any future expiry date and any CVC.</p>` : ""}
+      <div class="plans">
+        <section class="plan" aria-labelledby="plan-pack">
+          <h2 class="label" id="plan-pack">Credit pack</h2>
+          <p class="plan-credits"><span class="n">${pack.credits}</span> credits</p>
+          <p class="plan-price">${money(pack.amount, pack.currency)} <span class="muted">one time</span></p>
+          <p class="plan-note">For a burst of outreach. The credits stay in your account until you use them.</p>
+          <button type="button" class="btn btn-primary" data-act="buy" data-plan="pack">Buy ${pack.credits} credits <span class="arrow">${I.arrow}</span></button>
+        </section>
+        <section class="plan" aria-labelledby="plan-monthly">
+          <h2 class="label" id="plan-monthly">Monthly plan</h2>
+          <p class="plan-credits"><span class="n">${monthly.credits}</span> credits a ${esc(monthly.interval || "month")}</p>
+          <p class="plan-price">${money(monthly.amount, monthly.currency)} <span class="muted">per ${esc(monthly.interval || "month")}</span></p>
+          <p class="plan-note">For steady outreach. Credits are added each time you're billed. Cancel anytime from your account.</p>
+          <button type="button" class="btn btn-line" data-act="buy" data-plan="monthly">Start the monthly plan</button>
+        </section>
+      </div>
+      <p class="field-hint">Payments are handled by Stripe; Sociai never sees your card details.</p>`;
+  });
+  $("#main").addEventListener("click", (e) => {
+    const a = e.target.closest("[data-act='buy']");
+    if (a) openStripe(a, "/api/checkout", { plan: a.dataset.plan });
+  });
+  return () => { alive = false; };
+}
+
+let refreshAccountPage = null;
+
+function accountView() {
+  $("#main").innerHTML = `<div class="ruled"><div class="page stack">
+    <div class="row lead"><div class="margin"><p class="label">Account</p></div><div class="col">
+      <h1 class="h2" data-focus-on-enter>Account and billing</h1>
+      <p class="field-hint">Signed in as ${esc(account.email)}. Your background, samples and resume live on <a class="link-btn" href="#/profile">your profile</a>.</p>
+    </div></div>
+    <div id="acct"><div class="row"><div class="margin"></div><div class="col"><p class="opening" role="status">Loading…</p></div></div></div>
+  </div></div>`;
+  let alive = true;
+  const row = (h) => `<tr><td>${longDate(h.created_at)}</td><td>${esc(REASONS[h.reason] || h.reason)}</td>
+    <td class="num ${h.delta > 0 ? "plus" : "minus"}">${h.delta > 0 ? "+" : "−"}${Math.abs(h.delta)}</td></tr>`;
+  const table = (rows) => `<table class="ledger-table"><thead><tr><th scope="col">Date</th><th scope="col">What</th><th scope="col" class="num">Credits</th></tr></thead>
+    <tbody>${rows.map(row).join("")}</tbody></table>`;
+  const draw = async () => {
+    const { http, data } = await request("GET", "/api/account");
+    if (!alive) return;
+    if (http !== 200) { $("#acct").innerHTML = `<div class="row"><div class="margin"></div><div class="col"><p class="empty">Couldn't load your account. Try again.</p></div></div>`; return; }
+    setCredits(data.credits);
+    const purchases = data.history.filter((h) => PURCHASES.has(h.reason));
+    $("#acct").innerHTML = `
+      <div class="row"><div class="margin"><p class="label">Balance</p></div><div class="col">
+        <p class="balance"><span class="n">${data.credits}</span> ${data.credits === 1 ? "credit" : "credits"}</p>
+        <div class="gate-actions">${data.payments ? `<a class="btn btn-primary btn-sm" href="#/pricing">Buy credits</a>` : ""}
+          ${data.has_billing ? `<button type="button" class="btn btn-line btn-sm" data-act="portal">Manage subscription and invoices</button>` : ""}</div>
+      </div></div>
+      <div class="row"><div class="margin"><p class="label">Purchases</p></div><div class="col">
+        ${purchases.length ? table(purchases) : `<p class="empty">No purchases yet.</p>`}
+      </div></div>
+      <div class="row"><div class="margin"><p class="label">Credit activity</p><p class="margin-note">The last 100 changes to your balance.</p></div><div class="col">
+        ${table(data.history)}
+      </div></div>`;
+  };
+  draw();
+  $("#main").addEventListener("click", (e) => {
+    const a = e.target.closest("[data-act='portal']");
+    if (a) openStripe(a, "/api/billing-portal");
+  });
+  refreshAccountPage = draw;
+  return () => { alive = false; refreshAccountPage = null; };
+}
+
+// Back from Stripe Checkout: credits arrive by webhook, so wait for the purchase to show up.
+function handleCheckoutReturn() {
+  const outcome = new URLSearchParams(location.search).get("checkout");
+  if (!outcome) return;
+  history.replaceState(null, "", location.pathname + location.hash);
+  let startedAt = Date.now() - 10 * 60 * 1000;
+  try { startedAt = +sessionStorage.getItem("sociai.checkoutAt") || startedAt; sessionStorage.removeItem("sociai.checkoutAt"); } catch {}
+  if (outcome !== "success") return toast("Checkout cancelled. You weren't charged.");
+  toast("Payment received. Adding your credits…", { ms: 4000 });
+  let tries = 0;
+  const look = async () => {
+    const { http, data } = await request("GET", "/api/account");
+    const arrived = http === 200 && data.history.some((h) => PURCHASES.has(h.reason) && Date.parse(h.created_at) >= startedAt - 5 * 60 * 1000);
+    if (arrived) {
+      setCredits(data.credits);
+      refreshAccountPage?.();
+      return toast(`Credits added. You now have ${creditLabel(data.credits)}.`);
+    }
+    if (++tries < 20) return setTimeout(look, 1500);
+    toast("Your payment went through. Credits can take a minute to appear; refresh this page if they don't.", { ms: 12000 });
+  };
+  look();
+}
+
 const OUT_OF_DRAFTS = "No drafts left with this research. Re-running the research (1 credit) adds 3 more.";
 
+const PAGES = { desk: deskView, profile: profileView, pricing: pricingView, account: accountView };
+const PAGE_TITLES = { profile: "Your profile", pricing: "Pricing", account: "Account" };
 const VIEWS = { recipient: recipientView, research: researchView, review: reviewView, draft: draftView };
 
 /* ───────── Global interactions ───────── */
@@ -1647,7 +2070,9 @@ let sessionUser = null;
 
 // Jobs that were running when the page closed carry on (the server keeps them).
 function resumeJobs() {
-  for (const p of store.list()) {
+  for (const s of store.list()) {
+    const p = store.get(s.id);
+    if (!p) continue;
     for (const kind of ["research", "draft"]) {
       const st = kind === "research" ? p.research : p.draft;
       if (st.status !== "running") continue;
@@ -1657,15 +2082,22 @@ function resumeJobs() {
   }
 }
 
-function startSession(session) {
+async function startSession(session) {
   if (sessionUser) return;
   sessionUser = session.user.id;
   account.email = session.user.email || "";
-  useUser(session.user.id);
   hideSignIn();
+  $("#main").innerHTML = '<div class="page"><p class="opening" role="status">Opening your desk…</p></div>';
+  try {
+    await Promise.all([store.init({ uid: session.user.id, api: request, summarize }), loadProfile()]);
+  } catch {
+    return showFatal("Couldn't load your account", "Sociai couldn't load your projects and profile. Check your connection, then refresh the page.");
+  }
+  ready = true;
   render({ instant: true });
   resumeJobs();
   refreshAccount();
+  handleCheckoutReturn();
 }
 
 async function boot() {
@@ -1686,8 +2118,11 @@ async function boot() {
     if (session && !sessionUser) return startSession(session); // e.g. the link was opened in another tab
     if (session && session.user.id !== sessionUser) location.reload();
   });
+  let deleted = false;
+  try { deleted = sessionStorage.getItem("sociai.deleted") === "1"; sessionStorage.removeItem("sociai.deleted"); } catch {}
   if (auth.session) startSession(auth.session);
-  else showSignIn({ message: linkError ? "That sign-in link has expired or was already used. Send yourself a new one." : "" });
+  else showSignIn({ message: deleted ? "Your account and all its data were deleted."
+    : linkError ? "That sign-in link has expired or was already used. Send yourself a new one." : "" });
 }
 
 boot();

@@ -48,6 +48,12 @@ class Settings:
     max_accounts_per_ip: int = 3    # new accounts per IP per day
     trust_proxy: bool = False       # take the client IP from X-Forwarded-For (behind Render)
     disposable_domains: set = field(default_factory=set)
+    public_url: str = "http://localhost:8000"  # where Stripe sends people back to
+    stripe_secret_key: str = ""
+    stripe_webhook_secret: str = ""
+    stripe_price_pack: str = ""
+    stripe_price_monthly: str = ""
+    stripe_api_base: str | None = None  # tests point this at a local fake Stripe
 
     @classmethod
     def from_env(cls):
@@ -58,6 +64,11 @@ class Settings:
             global_daily_limit=_env_int("SOCIAI_GLOBAL_DAILY_LIMIT", 100),
             trust_proxy=os.environ.get("SOCIAI_TRUST_PROXY", "") in ("1", "true", "yes"),
             disposable_domains=load_blocklist(),
+            public_url=(os.environ.get("PUBLIC_URL") or os.environ.get("RENDER_EXTERNAL_URL") or "http://localhost:8000").rstrip("/"),
+            stripe_secret_key=os.environ.get("STRIPE_SECRET_KEY", ""),
+            stripe_webhook_secret=os.environ.get("STRIPE_WEBHOOK_SECRET", ""),
+            stripe_price_pack=os.environ.get("STRIPE_PRICE_PACK", ""),
+            stripe_price_monthly=os.environ.get("STRIPE_PRICE_MONTHLY", ""),
         )
 
     def missing(self):
