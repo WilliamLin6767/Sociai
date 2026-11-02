@@ -40,8 +40,9 @@ export function signInWithProvider(provider) {
   return client.auth.signInWithOAuth({ provider, options: { redirectTo: redirectTo() } });
 }
 
-export function signOut() {
-  return client.auth.signOut();
+// scope "local" signs out this browser only, e.g. after the account itself was deleted.
+export function signOut(scope) {
+  return client.auth.signOut(scope ? { scope } : undefined);
 }
 
 export function onAuthChange(fn) {

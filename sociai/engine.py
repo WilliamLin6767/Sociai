@@ -48,6 +48,18 @@ CACHE_WRITE_MULTIPLIER = 1.25
 WEB_SEARCH_PRICE = 10.00 / 1000  # per search
 
 
+RESUME_CHARS = 6000  # about 1,500 tokens: enough for a full one-page resume
+
+
+def resume_excerpt(text: str, limit: int = RESUME_CHARS) -> str:
+    """The start of a resume, cut at a line break, with a note when something was left out."""
+    text = text.strip()
+    if len(text) <= limit:
+        return text
+    cut = text.rfind("\n", 0, limit)
+    return text[: cut if cut > limit // 2 else limit].rstrip() + "\n[rest of resume omitted]"
+
+
 def _is_haiku(model: str) -> bool:
     return model.startswith("claude-haiku")
 
@@ -122,6 +134,7 @@ class OutreachRequest:
     writing_samples: list[str] = field(default_factory=list)  # sender's own past writing
     channel: str = "email"           # email | linkedin | cold dm | intro request ...
     max_words: int = 180
+    resume_text: str = ""            # sender's resume as plain text; drafting uses an excerpt
 
 
 @dataclass
@@ -262,6 +275,9 @@ Rules:
 - Lead with why this person specifically, make the ask clear and easy to say
   yes to, and respect their time. No buzzwords, no excessive praise.
 - Stay within the word limit. For channels without subjects, leave subject empty.
+- The sender's resume, if given, is background, not content to summarize. Use at
+  most one or two details from it, and only ones that make this particular message
+  more relevant to this recipient and goal. Never list their experience.
 - When asked to revise an existing draft, treat it as the sender's text: they
   may have edited it by hand. Change only what the revision request needs and
   keep their wording everywhere else."""
@@ -336,7 +352,9 @@ class Engine:
             f"Channel: {req.channel}\nWord limit: {req.max_words}\n\n"
             f"Sender's goal: {req.goal}\n"
             f"Sender's background: {req.sender_background or '(not given)'}\n\n"
-            f"Sender's writing samples:\n{samples}\n\n"
+            + (f"Sender's resume (use only details that help this specific message):\n{resume_excerpt(req.resume_text)}\n\n"
+               if req.resume_text.strip() else "")
+            + f"Sender's writing samples:\n{samples}\n\n"
             f"Research on the recipient:\n{dossier.as_text()}\n\n"
         )
         if revise:
