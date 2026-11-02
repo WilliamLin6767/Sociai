@@ -21,3 +21,11 @@ services:
         value: "100"
       - key: SOCIAI_TRUST_PROXY
         value: "1"
+      - key: STRIPE_SECRET_KEY
+        sync: false
+      - key: STRIPE_WEBHOOK_SECRET
+        sync: false
+      - key: STRIPE_PRICE_PACK
+        sync: false
+      - key: STRIPE_PRICE_MONTHLY
+        sync: false

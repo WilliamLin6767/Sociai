@@ -705,6 +705,33 @@ body.focus-on .bar:hover, body.focus-on .bar:focus-within { opacity: 1; }
 .menu a.mi { display: block; padding: 9px 10px; border-radius: var(--r1); font-size: 14px; text-decoration: none; color: var(--ink); }
 .menu a.mi:hover, .menu a.mi:focus-visible { background: var(--paper-2); outline: none; }
 
+/* ───────── Pricing and account ───────── */
+.test-note { margin: 0 0 var(--s5); padding: var(--s3) var(--s4); border-left: 2px solid var(--pen); background: var(--sheet); font-size: 14px; color: var(--ink-2); }
+.test-note b { color: var(--pen); font-weight: 600; }
+.plans { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--s6); margin-bottom: var(--s5); }
+.plan { border-top: 1.5px solid var(--ink); padding-top: var(--s4); display: grid; gap: var(--s2); align-content: start; }
+.plan .label { margin: 0; }
+.plan-credits { margin: var(--s2) 0 0; font: 400 20px/1.2 var(--serif); color: var(--ink-2); }
+.plan-credits .n, .balance .n { font: 400 clamp(44px, 5vw, 60px)/1 var(--serif); color: var(--ink); letter-spacing: -.02em; margin-right: 6px; }
+.plan-price { margin: 0; font: 500 16px/1.4 var(--sans); }
+.plan-price .muted { font-weight: 400; font-size: 14px; }
+.plan-note { margin: 0 0 var(--s3); font-size: 14px; color: var(--ink-3); max-width: 34ch; }
+.plan .btn { justify-self: start; }
+.balance { margin: 0 0 var(--s3); font: 400 20px/1.2 var(--serif); color: var(--ink-2); }
+.stack { padding-top: var(--s8); padding-bottom: var(--s6); }
+.stack .row { margin-top: var(--s7); }
+.stack > .row:first-child { margin-top: 0; }
+.ledger-table { width: 100%; border-collapse: collapse; font-size: 14px; max-width: 640px; table-layout: fixed; }
+.ledger-table th:first-child { width: 9.5rem; }
+.ledger-table th.num { width: 6rem; }
+.ledger-table th { text-align: left; font: 500 11px/1 var(--mono); letter-spacing: .08em; text-transform: uppercase; color: var(--ink-3); padding: 0 0 var(--s2); border-bottom: 1px solid var(--rule); }
+.ledger-table td { padding: 10px 0; border-bottom: 1px solid var(--rule-2); color: var(--ink-2); }
+.ledger-table td:first-child { font: 400 12.5px/1.4 var(--mono); color: var(--ink-3); white-space: nowrap; padding-right: var(--s4); }
+.ledger-table .num { text-align: right; font-variant-numeric: tabular-nums; }
+.ledger-table td.plus { color: var(--ink); font-weight: 600; }
+.ledger-table td.minus { color: var(--ink-3); }
+@media (max-width: 720px) { .plans { grid-template-columns: minmax(0, 1fr); } }
+
 /* ───────── Toasts ───────── */
 .toasts { position: fixed; left: 50%; bottom: 84px; transform: translateX(-50%); z-index: 45; display: grid; gap: var(--s2); width: max-content; max-width: calc(100vw - 32px); }
 .toast { display: flex; align-items: center; gap: var(--s4); background: var(--ink); color: var(--on-ink); padding: 10px 12px 10px 16px; border-radius: var(--r2); font-size: 14px; box-shadow: var(--shadow-pop); animation: toastIn var(--d-3) var(--ease-out); }

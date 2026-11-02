@@ -19,6 +19,11 @@ changes them only through the database functions defined there.
   GET  /api/projects?q=    the user's projects, newest first (summaries only)
   GET / PUT / DELETE /api/projects/<id>   one project's full saved state
   DELETE /api/account      {confirm: "DELETE"}: the account and all its data
+  GET  /api/account        balance, billing status, credit history
+  GET  /api/pricing        the two plans, with prices from Stripe
+  POST /api/checkout       {plan: "pack" | "monthly"} -> {url} of a Stripe Checkout page
+  POST /api/billing-portal -> {url} of the Stripe customer portal
+  POST /api/stripe/webhook public; Stripe-signed events add credits (once per event)
   GET  /healthz            -> {"ok": true}
 
 Profile and project calls run as the user (their own token), so the database's
@@ -42,7 +47,9 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 import anthropic
+import stripe
 
+from .billing import PLANS, Billing, BillingError
 from .config import Settings, is_disposable, load_env
 from .engine import Dossier, Engine, OutreachRequest, Refused, RunUsage
 from .resume import KINDS, MAX_BYTES as MAX_RESUME, MAX_TEXT as MAX_RESUME_TEXT, ResumeError, detect, extract_text
@@ -58,6 +65,8 @@ MAX_PROJECT_BODY = 2_100_000  # the database caps a project's saved state at 2 M
 DRAIN_LIMIT = 16 * 1024 * 1024  # oversized bodies up to this size are read so the 413 reaches the client
 CHANNELS = ("email", "linkedin", "direct message")
 RESUME_BUCKET = "resumes"
+MAX_WEBHOOK_BODY = 1024 * 1024
+UUID = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
 TOKEN_TTL = 60     # seconds a verified access token is trusted before asking Supabase again
 PROJECT_ID = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 
@@ -65,14 +74,17 @@ PROJECT_ID = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 settings: Settings = Settings()
 supa: Supabase | None = None
 engine: Engine | None = None
+billing: Billing | None = None
+billing_off_reason = ""
 
 
 def setup(new_settings: Settings, new_engine: Engine | None = None):
-    global settings, supa, engine
+    global settings, supa, engine, billing, billing_off_reason
     settings = new_settings
     supa = Supabase(settings.supabase_url, settings.supabase_anon_key, settings.supabase_service_key) \
         if not settings.missing() else None
     engine = new_engine or Engine()
+    billing, billing_off_reason = Billing.from_settings(settings)
 
 
 class Reject(Exception):
@@ -101,7 +113,8 @@ BLOCKED = {
     "too_many_accounts": "Too many new accounts were created from your network today. Please try again tomorrow.",
 }
 START_ERRORS = {  # sociai_start_job error code -> (HTTP status, message)
-    "no_credits": (402, "You're out of credits. Each credit covers one research run and up to 3 drafts."),
+    "no_credits": (402, "You're out of credits. Get more on the Pricing page: each credit covers one research run "
+                        "and up to 3 drafts."),
     "draft_limit": (402, "You've used the 3 drafts included with this research. Re-running the research "
                          "(1 credit) adds 3 more."),
     "no_research": (409, "Research this person first. Drafts come with a finished research run."),
@@ -245,6 +258,11 @@ class Handler(BaseHTTPRequestHandler):
         except SupabaseError as e:
             print(f"[supabase] {e}", flush=True)
             self._json(503, {"error": "Sociai can't reach its account service right now. Try again in a minute."})
+        except BillingError as e:
+            self._json(e.status, {"error": str(e)})
+        except stripe.StripeError as e:
+            print(f"[stripe] {type(e).__name__}: {e}", flush=True)
+            self._json(502, {"error": "Payments aren't available right now. Try again in a minute."})
 
     def _get_api(self, url):
         if url.path == "/api/config":
@@ -257,6 +275,12 @@ class Handler(BaseHTTPRequestHandler):
                                     "blocked": BLOCKED.get(account.get("blocked_reason") or "")})
         if url.path == "/api/profile":
             return self._json(200, self._profile())
+        if url.path == "/api/account":
+            return self._json(200, {**supa.rpc_as(self._token, "sociai_account"), "payments": billing is not None})
+        if url.path == "/api/pricing":
+            if not billing:
+                return self._json(200, {"enabled": False})
+            return self._json(200, {"enabled": True, "test_mode": True, "plans": billing.plans()})
         if url.path == "/api/projects":
             query = parse_qs(url.query).get("q", [""])[0][:200]
             return self._json(200, {"projects": supa.rpc_as(self._token, "sociai_list_projects", p_query=query)})
@@ -284,8 +308,28 @@ class Handler(BaseHTTPRequestHandler):
             if is_disposable(email, settings.disposable_domains):
                 raise Reject(400, BLOCKED["disposable_email"])
             return self._json(200, {"ok": True})
+        if url.path == "/api/stripe/webhook":
+            return self._stripe_webhook()
         if url.path == "/api/profile/resume":
             return self._upload_resume(self._user(), url)
+        if url.path == "/api/checkout":
+            user = self._user()
+            plan = self._read_json().get("plan")
+            if plan not in PLANS:
+                raise Reject(400, "Choose the credit pack or the monthly plan.")
+            self._billing()
+            self._activate(user)  # blocked accounts can't buy credits they can't use
+            customer = self._customer(user)
+            if plan == "monthly" and billing.has_subscription(customer):
+                raise Reject(409, "You already have the monthly plan. You can manage it from your account page.")
+            return self._json(200, {"url": billing.checkout_url(user["id"], customer, plan)})
+        if url.path == "/api/billing-portal":
+            user = self._user()
+            self._billing()
+            customer = supa.rpc("sociai_get_customer", p_user=user["id"]).get("customer")
+            if not customer:
+                raise Reject(409, "You don't have a billing account yet. It's created with your first purchase.")
+            return self._json(200, {"url": billing.portal_url(customer)})
         route = JOB_ROUTES.get(url.path)
         if not route:
             raise Reject(404, "Not found.")
@@ -308,7 +352,10 @@ class Handler(BaseHTTPRequestHandler):
             raise Reject(403, BLOCKED.get(started.get("reason"), "This account can't start new jobs."))
         if code:
             status, message = START_ERRORS.get(code, (500, GENERIC_ERROR))
-            raise Reject(status, message, **({"credits": started["credits"]} if "credits" in started else {}))
+            extra = {"credits": started["credits"]} if "credits" in started else {}
+            if code == "no_credits":
+                extra["action"] = "pricing"  # the page links to the Pricing page
+            raise Reject(status, message, **extra)
         keep_job(Job(started["job_id"], work, kind, user["id"]))
         self._json(200, {"job": started["job_id"], "credits": started["credits"],
                          **({"drafts_left": started["drafts_left"]} if "drafts_left" in started else {})})
@@ -363,6 +410,48 @@ class Handler(BaseHTTPRequestHandler):
                 raise Reject(400, 'Send {"confirm": "DELETE"} to delete your account.')
             return self._delete_account(user)
         raise Reject(404, "Not found.")
+
+    def _billing(self):
+        if not billing:
+            print(f"[stripe] payments are off: {billing_off_reason}", flush=True)
+            raise Reject(503, "Payments aren't set up on this server yet.")
+
+    def _customer(self, user):
+        """The user's Stripe customer, created on first purchase. One per user."""
+        info = supa.rpc("sociai_get_customer", p_user=user["id"])
+        if info.get("customer"):
+            return info["customer"]
+        created = billing.create_customer(user.get("email"), user["id"])
+        stored = supa.rpc("sociai_set_customer", p_user=user["id"], p_customer=created)["customer"]
+        if stored != created:  # another checkout got there first; keep that one
+            print(f"[stripe] unused customer {created} for {user['id']}", flush=True)
+        return stored
+
+    def _stripe_webhook(self):
+        if not billing:
+            raise Reject(503, "Payments aren't set up on this server yet.")
+        payload = self._read_raw(MAX_WEBHOOK_BODY)
+        event = billing.verify(payload, self.headers.get("Stripe-Signature"))
+        grant = billing.grant_for(event)
+        if not grant:
+            return self._json(200, {"received": True})
+        user_id = grant.user_id
+        if not user_id and grant.customer:
+            user_id = (supa.rpc("sociai_user_for_customer", p_customer=grant.customer) or {}).get("user_id")
+        if not user_id or not UUID.match(str(user_id)):
+            print(f"[stripe] {event.get('id')} {event.get('type')}: no Sociai user for it; ignored", flush=True)
+            return self._json(200, {"received": True})
+        result = supa.rpc("sociai_grant_credits", p_user=user_id, p_delta=grant.credits, p_reason=grant.reason,
+                          p_event=event["id"])
+        if result.get("error"):
+            print(f"[stripe] {event['id']}: {result['error']} for {user_id}; ignored", flush=True)
+            return self._json(200, {"received": True})
+        if grant.customer:
+            supa.rpc("sociai_set_customer", p_user=user_id, p_customer=grant.customer)
+        word = "granted" if result["granted"] else "already credited"
+        print(f"[stripe] {event['id']} {event['type']}: {grant.credits} credits {word} for {user_id} "
+              f"(balance {result['credits']})", flush=True)
+        self._json(200, {"received": True, "granted": result["granted"]})
 
     def _profile(self):
         profile = supa.rpc_as(self._token, "sociai_get_profile")
@@ -507,6 +596,11 @@ def main():
     else:
         print(f"Accounts are OFF: set {', '.join(settings.missing())} (see .env.example). "
               "Sign-in and the API won't work until then.", flush=True)
+    if billing:
+        print(f"Payments: Stripe test mode. Customers return to {settings.public_url}."
+              + ("" if settings.stripe_webhook_secret else " STRIPE_WEBHOOK_SECRET is missing, so purchases won't add credits."), flush=True)
+    else:
+        print(f"Payments are OFF: {billing_off_reason}.", flush=True)
     server.serve_forever()
 
 

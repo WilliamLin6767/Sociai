@@ -238,7 +238,7 @@ async function saveBriefToProfile(b) {
 
 const creditLabel = (n) => (n === null ? "…" : `${n} credit${n === 1 ? "" : "s"}`);
 const creditNote = () => account.credits === 0
-  ? "You're out of credits. Each credit covers one research run and up to 3 drafts."
+  ? 'You\'re out of credits. <a class="link-btn" href="#/pricing">Get more credits</a>'
   : `Uses 1 credit, which includes up to 3 drafts${account.credits === null ? "" : `. You have ${creditLabel(account.credits)}`}. Sociai never sends anything for you.`;
 
 function setCredits(n) {
@@ -250,7 +250,7 @@ function setCredits(n) {
     if (changed) { el.classList.remove("bump"); void el.offsetWidth; el.classList.add("bump"); }
   }
   const note = $("#credit-note");
-  if (note) note.textContent = creditNote();
+  if (note) note.innerHTML = creditNote();
 }
 
 async function refreshAccount() {
@@ -273,7 +273,9 @@ function toggleAccountMenu(btn) {
   btn.insertAdjacentHTML("afterend", `<div class="menu menu-down" role="menu">
     <p class="menu-head"><span class="label">Signed in as</span><span class="menu-email">${esc(account.email)}</span></p>
     <p class="menu-note">${creditLabel(account.credits)} left. One credit covers a research run plus up to 3 drafts or revisions for that person.</p>
-    <hr><a class="mi" role="menuitem" href="#/profile">Your profile</a>
+    <hr><a class="mi" role="menuitem" href="#/pricing">Buy credits</a>
+    <a class="mi" role="menuitem" href="#/account">Account and billing</a>
+    <a class="mi" role="menuitem" href="#/profile">Your profile</a>
     <button type="button" class="mi" role="menuitem" data-act="sign-out">Sign out</button></div>`);
   $(".account .mi").focus();
 }
@@ -410,10 +412,10 @@ function poll(id, kind) {
   polling.set(key, setTimeout(tick, 250));
 }
 
-function failJob(id, kind, message) {
+function failJob(id, kind, message, action = null) {
   store.update(id, (p) => {
     const st = kind === "research" ? p.research : p.draft;
-    Object.assign(st, { status: "error", error: message, job: null });
+    Object.assign(st, { status: "error", error: message, errorAction: action, job: null });
     if (kind === "draft") st.pending = null;
   }, kind);
 }
@@ -428,11 +430,11 @@ async function startResearch(id) {
   }, "research");
   try {
     const { data } = await api("/api/research", { request: requestOf(store.get(id)), project_id: id });
-    if (data.error || !data.job) throw new Error(data.error || "The server didn't start the research.");
+    if (data.error || !data.job) throw Object.assign(new Error(data.error || "The server didn't start the research."), { action: data.action });
     store.update(id, (p) => { p.research.job = data.job; }, "edit");
     poll(id, "research");
   } catch (e) {
-    failJob(id, "research", e instanceof TypeError ? "Couldn't reach the Sociai server. Is it running?" : String(e.message || e));
+    failJob(id, "research", e instanceof TypeError ? "Couldn't reach the Sociai server. Is it running?" : String(e.message || e), e.action);
   }
 }
 
@@ -453,14 +455,14 @@ async function startDraft(id, { instruction = null, label = "First draft" } = {}
   store.update(id, (p) => { Object.assign(p.draft, { status: "running", error: null, job: null, pending: { label, threads, revise: !!body.revise } }); }, "draft");
   try {
     const { data } = await api("/api/draft", body);
-    if (data.error || !data.job) throw new Error(data.error || "The server didn't start the draft.");
+    if (data.error || !data.job) throw Object.assign(new Error(data.error || "The server didn't start the draft."), { action: data.action });
     store.update(id, (p) => {
       p.draft.job = data.job;
       if (typeof data.drafts_left === "number") p.draftsLeft = data.drafts_left;
     }, "edit");
     poll(id, "draft");
   } catch (e) {
-    failJob(id, "draft", e instanceof TypeError ? "Couldn't reach the Sociai server. Is it running?" : String(e.message || e));
+    failJob(id, "draft", e instanceof TypeError ? "Couldn't reach the Sociai server. Is it running?" : String(e.message || e), e.action);
   }
 }
 
@@ -482,7 +484,7 @@ function finishDraft(id, r) {
 let view = null; // { route, cleanup }
 
 function parseRoute() {
-  if (location.hash.startsWith("#/profile")) return { view: "profile" };
+  for (const page of ["profile", "pricing", "account"]) if (location.hash.startsWith(`#/${page}`)) return { view: page };
   const m = location.hash.match(/^#\/p\/([\w-]+)(?:\/(\w+))?/);
   return m ? { view: "project", id: m[1], stage: m[2] } : { view: "desk" };
 }
@@ -521,7 +523,8 @@ function render({ instant = false } = {}) {
     closePop(); closeDrawer(); closeMenus();
     document.body.classList.remove("focus-on");
     renderBar(route, p);
-    const fn = route.view === "desk" ? deskView : route.view === "profile" ? profileView : VIEWS[route.stage];
+    resetMain();
+    const fn = PAGES[route.view] || VIEWS[route.stage];
     view = { route, cleanup: fn(p, from) };
     if (!instant) { window.scrollTo(0, 0); focusMain(route); }
   };
@@ -541,12 +544,21 @@ function openSaved(route) {
   view?.cleanup?.();
   view = { route: { view: "loading" }, cleanup: null };
   closePop(); closeDrawer(); closeMenus();
+  resetMain();
   renderBar({ view: "loading" }, null);
   $("#main").innerHTML = `<div class="page"><p class="opening" role="status">Opening ${esc(store.summary(route.id)?.name || "your project")}…</p></div>`;
   store.load(route.id).then(
     () => { if (parseRoute().id === route.id) render({ instant: true }); },
     () => { toast("Couldn't open that project. It may have been deleted."); go("#/"); },
   );
+}
+
+// Each view adds its own listeners to #main. A fresh element per view drops the previous
+// view's listeners, so they never pile up as the user moves around.
+function resetMain() {
+  const old = $("#main");
+  const fresh = old.cloneNode(false);
+  old.replaceWith(fresh);
 }
 
 function focusMain(route) {
@@ -589,7 +601,7 @@ function renderBar(route, p) {
     <a class="brand" href="#/" aria-label="Sociai: your desk">${MARK}<span class="brand-word">Sociai</span></a>
     ${p ? `<div class="crumb"><span class="crumb-sep" aria-hidden="true">/</span><span class="crumb-who" id="crumb-who">${esc(nameOf(p))}</span><span class="crumb-goal" id="crumb-goal">${esc(p.brief.goal)}</span></div>
       <div id="nav-slot">${threadNav(p, route.stage)}</div>`
-      : route.view === "profile" ? '<div class="crumb"><span class="crumb-sep" aria-hidden="true">/</span><span class="crumb-who">Your profile</span></div>'
+      : PAGE_TITLES[route.view] ? `<div class="crumb"><span class="crumb-sep" aria-hidden="true">/</span><span class="crumb-who">${PAGE_TITLES[route.view]}</span></div>`
       : '<div class="crumb"></div>'}
     <div class="bar-end">${p || route.view === "profile" ? '<span class="saved" id="saved" title="Saved to your account"><span>Saved</span></span>' : ""}${accountButton()}${themeButton()}</div>
   </div>`;
@@ -994,7 +1006,7 @@ function deskView(_, from) {
     onSubmit: (b) => {
       if (account.credits === 0) {
         $("#credit-note").classList.add("is-warn");
-        return toast("You're out of credits, so a new research run can't start.");
+        return toast("You're out of credits, so a new research run can't start.", { action: { label: "Get credits", fn: () => go("#/pricing") } });
       }
       const clean = { ...b, samples: b.samples.filter((s) => s.trim()) };
       const p = store.create(clean);
@@ -1216,7 +1228,7 @@ function researchView(p) {
     const secs = ((r.finishedAt || Date.now()) - (r.startedAt || Date.now())) / 1000;
     $("#elapsed").textContent = r.status === "running" ? mmss(secs) : r.status === "done" ? `Took ${mmss(secs)}` : "";
     if (r.status === "error") {
-      extra.innerHTML = `<div class="failure" role="alert"><p>${r.events.length ? "The research stopped before it finished." : "The research didn't start."} ${r.dossier ? "Your earlier research is still there." : "Nothing was lost from your brief."}</p><code>${esc(r.error)}</code></div>`;
+      extra.innerHTML = `<div class="failure" role="alert"><p>${r.events.length ? "The research stopped before it finished." : "The research didn't start."} ${r.dossier ? "Your earlier research is still there." : "Nothing was lost from your brief."}</p><code>${esc(r.error)}</code>${r.errorAction === "pricing" ? `<div class="actions"><a class="btn btn-primary btn-sm" href="#/pricing">Get more credits</a></div>` : ""}</div>`;
     } else if (r.status === "running" && secs > 150) {
       extra.innerHTML = `<p class="notice">This is taking longer than usual. It's still working on the server.</p>`;
     } else if (r.status === "running" && secs > 40) {
@@ -1846,8 +1858,147 @@ function profileView() {
   return now; // leaving the page saves anything still waiting
 }
 
+/* ───────── Pricing and account ───────── */
+
+const REASONS = {
+  signup_bonus: "Welcome credits", research: "Research run", refund: "Refund: research didn't finish",
+  purchase_pack: "20-credit pack", subscription_credits: "Monthly plan", manual_grant: "Added by Sociai",
+};
+const PURCHASES = new Set(["purchase_pack", "subscription_credits"]);
+const ZERO_DECIMAL = new Set(["bif", "clp", "djf", "gnf", "jpy", "kmf", "krw", "mga", "pyg", "rwf", "ugx", "vnd", "vuv", "xaf", "xof", "xpf"]);
+const money = (amount, currency) => amount == null ? "" : new Intl.NumberFormat(undefined, { style: "currency", currency: currency.toUpperCase() })
+  .format(ZERO_DECIMAL.has(currency) ? amount : amount / 100);
+const longDate = (iso) => new Date(iso).toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" });
+
+async function openStripe(btn, path, body) {
+  const label = btn.innerHTML;
+  btn.disabled = true;
+  btn.textContent = path === "/api/checkout" ? "Opening checkout…" : "Opening Stripe…";
+  const { http, data } = await request("POST", path, body);
+  if (http === 200 && data.url) {
+    if (path === "/api/checkout") { try { sessionStorage.setItem("sociai.checkoutAt", String(Date.now())); } catch {} }
+    return location.assign(data.url);
+  }
+  btn.disabled = false;
+  btn.innerHTML = label;
+  toast(data?.error || "Couldn't open Stripe. Try again.");
+}
+
+function pricingView() {
+  $("#main").innerHTML = `<div class="ruled"><div class="page stack">
+    <div class="row lead"><div class="margin"><p class="label">Pricing</p></div><div class="col">
+      <h1 class="h2" data-focus-on-enter>More credits</h1>
+      <p class="field-hint">Each credit covers one research run plus up to 3 drafts or revisions for that person. You have <b>${creditLabel(account.credits)}</b>.</p>
+    </div></div>
+    <div class="row"><div class="margin"></div><div class="col" id="pr-plans"><p class="opening" role="status">Loading prices…</p></div></div>
+  </div></div>`;
+  let alive = true;
+  request("GET", "/api/pricing").then(({ http, data }) => {
+    if (!alive) return;
+    const host = $("#pr-plans");
+    if (http !== 200 || !data.enabled) {
+      host.innerHTML = `<p class="empty">Buying credits isn't available yet.</p>`;
+      return;
+    }
+    const { pack, monthly } = data.plans;
+    host.innerHTML = `
+      ${data.test_mode ? `<p class="test-note"><b>Test mode:</b> no real charges. Pay with card 4242 4242 4242 4242, any future expiry date and any CVC.</p>` : ""}
+      <div class="plans">
+        <section class="plan" aria-labelledby="plan-pack">
+          <h2 class="label" id="plan-pack">Credit pack</h2>
+          <p class="plan-credits"><span class="n">${pack.credits}</span> credits</p>
+          <p class="plan-price">${money(pack.amount, pack.currency)} <span class="muted">one time</span></p>
+          <p class="plan-note">For a burst of outreach. The credits stay in your account until you use them.</p>
+          <button type="button" class="btn btn-primary" data-act="buy" data-plan="pack">Buy ${pack.credits} credits <span class="arrow">${I.arrow}</span></button>
+        </section>
+        <section class="plan" aria-labelledby="plan-monthly">
+          <h2 class="label" id="plan-monthly">Monthly plan</h2>
+          <p class="plan-credits"><span class="n">${monthly.credits}</span> credits a ${esc(monthly.interval || "month")}</p>
+          <p class="plan-price">${money(monthly.amount, monthly.currency)} <span class="muted">per ${esc(monthly.interval || "month")}</span></p>
+          <p class="plan-note">For steady outreach. Credits are added each time you're billed. Cancel anytime from your account.</p>
+          <button type="button" class="btn btn-line" data-act="buy" data-plan="monthly">Start the monthly plan</button>
+        </section>
+      </div>
+      <p class="field-hint">Payments are handled by Stripe; Sociai never sees your card details.</p>`;
+  });
+  $("#main").addEventListener("click", (e) => {
+    const a = e.target.closest("[data-act='buy']");
+    if (a) openStripe(a, "/api/checkout", { plan: a.dataset.plan });
+  });
+  return () => { alive = false; };
+}
+
+let refreshAccountPage = null;
+
+function accountView() {
+  $("#main").innerHTML = `<div class="ruled"><div class="page stack">
+    <div class="row lead"><div class="margin"><p class="label">Account</p></div><div class="col">
+      <h1 class="h2" data-focus-on-enter>Account and billing</h1>
+      <p class="field-hint">Signed in as ${esc(account.email)}. Your background, samples and resume live on <a class="link-btn" href="#/profile">your profile</a>.</p>
+    </div></div>
+    <div id="acct"><div class="row"><div class="margin"></div><div class="col"><p class="opening" role="status">Loading…</p></div></div></div>
+  </div></div>`;
+  let alive = true;
+  const row = (h) => `<tr><td>${longDate(h.created_at)}</td><td>${esc(REASONS[h.reason] || h.reason)}</td>
+    <td class="num ${h.delta > 0 ? "plus" : "minus"}">${h.delta > 0 ? "+" : "−"}${Math.abs(h.delta)}</td></tr>`;
+  const table = (rows) => `<table class="ledger-table"><thead><tr><th scope="col">Date</th><th scope="col">What</th><th scope="col" class="num">Credits</th></tr></thead>
+    <tbody>${rows.map(row).join("")}</tbody></table>`;
+  const draw = async () => {
+    const { http, data } = await request("GET", "/api/account");
+    if (!alive) return;
+    if (http !== 200) { $("#acct").innerHTML = `<div class="row"><div class="margin"></div><div class="col"><p class="empty">Couldn't load your account. Try again.</p></div></div>`; return; }
+    setCredits(data.credits);
+    const purchases = data.history.filter((h) => PURCHASES.has(h.reason));
+    $("#acct").innerHTML = `
+      <div class="row"><div class="margin"><p class="label">Balance</p></div><div class="col">
+        <p class="balance"><span class="n">${data.credits}</span> ${data.credits === 1 ? "credit" : "credits"}</p>
+        <div class="gate-actions">${data.payments ? `<a class="btn btn-primary btn-sm" href="#/pricing">Buy credits</a>` : ""}
+          ${data.has_billing ? `<button type="button" class="btn btn-line btn-sm" data-act="portal">Manage subscription and invoices</button>` : ""}</div>
+      </div></div>
+      <div class="row"><div class="margin"><p class="label">Purchases</p></div><div class="col">
+        ${purchases.length ? table(purchases) : `<p class="empty">No purchases yet.</p>`}
+      </div></div>
+      <div class="row"><div class="margin"><p class="label">Credit activity</p><p class="margin-note">The last 100 changes to your balance.</p></div><div class="col">
+        ${table(data.history)}
+      </div></div>`;
+  };
+  draw();
+  $("#main").addEventListener("click", (e) => {
+    const a = e.target.closest("[data-act='portal']");
+    if (a) openStripe(a, "/api/billing-portal");
+  });
+  refreshAccountPage = draw;
+  return () => { alive = false; refreshAccountPage = null; };
+}
+
+// Back from Stripe Checkout: credits arrive by webhook, so wait for the purchase to show up.
+function handleCheckoutReturn() {
+  const outcome = new URLSearchParams(location.search).get("checkout");
+  if (!outcome) return;
+  history.replaceState(null, "", location.pathname + location.hash);
+  let startedAt = Date.now() - 10 * 60 * 1000;
+  try { startedAt = +sessionStorage.getItem("sociai.checkoutAt") || startedAt; sessionStorage.removeItem("sociai.checkoutAt"); } catch {}
+  if (outcome !== "success") return toast("Checkout cancelled. You weren't charged.");
+  toast("Payment received. Adding your credits…", { ms: 4000 });
+  let tries = 0;
+  const look = async () => {
+    const { http, data } = await request("GET", "/api/account");
+    const arrived = http === 200 && data.history.some((h) => PURCHASES.has(h.reason) && Date.parse(h.created_at) >= startedAt - 5 * 60 * 1000);
+    if (arrived) {
+      setCredits(data.credits);
+      refreshAccountPage?.();
+      return toast(`Credits added. You now have ${creditLabel(data.credits)}.`);
+    }
+    if (++tries < 20) return setTimeout(look, 1500);
+    toast("Your payment went through. Credits can take a minute to appear; refresh this page if they don't.", { ms: 12000 });
+  };
+  look();
+}
+
 const OUT_OF_DRAFTS = "No drafts left with this research. Re-running the research (1 credit) adds 3 more.";
 
+const PAGES = { desk: deskView, profile: profileView, pricing: pricingView, account: accountView };
+const PAGE_TITLES = { profile: "Your profile", pricing: "Pricing", account: "Account" };
 const VIEWS = { recipient: recipientView, research: researchView, review: reviewView, draft: draftView };
 
 /* ───────── Global interactions ───────── */
@@ -1946,6 +2097,7 @@ async function startSession(session) {
   render({ instant: true });
   resumeJobs();
   refreshAccount();
+  handleCheckoutReturn();
 }
 
 async function boot() {

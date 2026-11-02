@@ -69,6 +69,17 @@ Each account has a **Profile** page (account menu > Your profile):
 
 **Privacy:** profiles, writing samples, resume files and their text, and projects are stored in your Supabase project. Row-level security lets each user read and change only their own rows and files.
 
+## Payments (Stripe, test mode)
+
+People buy credits on the **Pricing** page (account menu > Buy credits, or the link in any "out of credits" message):
+
+- **Credit pack**: 20 credits, one-time (`STRIPE_PRICE_PACK`).
+- **Monthly plan**: 30 credits each month (`STRIPE_PRICE_MONTHLY`), added every time an invoice is paid. Users manage or cancel it in the Stripe customer portal from the **Account** page, which also lists their purchases and recent credit activity.
+
+Checkout and the portal are Stripe-hosted pages; Sociai never sees card details. Credits are added only by **signed webhooks** (`checkout.session.completed` for the pack, `invoice.paid` for the plan), never by the browser coming back from Checkout. Each Stripe event id is stored in `credit_ledger.stripe_event_id` (unique), so an event delivered twice adds credits once. Each user gets one Stripe customer, stored on their profile.
+
+**Test mode only:** the server refuses a live key (`sk_live_...`) and ignores live-mode events.
+
 ## Supabase setup
 
 1. **Create a project** at [supabase.com/dashboard](https://supabase.com/dashboard) (**New project**).
@@ -84,6 +95,7 @@ Each account has a **Profile** page (account menu > Your profile):
    | Migration | Creates |
    | --- | --- |
    | `20261101000000_accounts_and_credits.sql` | `profiles` (credits), `credit_ledger`, `jobs`, the free-credit trigger and the credit functions |
+   | `20261103000000_payments.sql` | `stripe_customer_id` on `profiles`, and the functions that grant credits once per Stripe event and show the Account page |
    | `20261102000000_profiles_and_history.sql` | profile fields on `profiles` (background, default channel and word limit, resume text), `writing_samples`, `projects`, `deleted_accounts`, the private **`resumes`** Storage bucket (5 MB, PDF/DOCX only) and its per-user-folder policies |
 
    Then check **Storage**: a bucket named `resumes` should be listed as private. If your project doesn't let SQL create buckets, create it by hand (**Storage > New bucket**, name `resumes`, public off, 5 MB limit, allowed types `application/pdf` and `application/vnd.openxmlformats-officedocument.wordprocessingml.document`) then run just the storage section at the end of that migration (from the `insert into storage.buckets` line down) so the per-user policies exist.
@@ -100,6 +112,26 @@ insert into public.credit_ledger (user_id, delta, reason)
 -- unblock an account flagged as disposable or over the per-IP limit
 update public.profiles set blocked_reason = null where email = 'tester@example.com';
 ```
+
+## Stripe setup (test mode)
+
+1. In the [Stripe dashboard](https://dashboard.stripe.com), switch on **Test mode** (top right). Everything below happens in test mode.
+2. **Products > Add product**:
+   - "Sociai credit pack": one-off price, e.g. $9.00. Copy its price id (`price_...`) into `STRIPE_PRICE_PACK`.
+   - "Sociai monthly": recurring monthly price, e.g. $15.00. Copy its price id into `STRIPE_PRICE_MONTHLY`.
+3. **Developers > API keys**: copy the secret key (`sk_test_...`) into `STRIPE_SECRET_KEY`.
+4. **Settings > Billing > Customer portal**: click **Activate test link** (or **Save**) once, and allow customers to cancel subscriptions. Without this, "Manage subscription" fails.
+5. **Webhooks**
+   - **On Render**: **Developers > Webhooks > Add endpoint**, URL `https://<your-app>.onrender.com/api/stripe/webhook`, events `checkout.session.completed`, `checkout.session.async_payment_succeeded` and `invoice.paid`. Copy its signing secret (`whsec_...`) into Render's `STRIPE_WEBHOOK_SECRET`.
+   - **Locally**: install the [Stripe CLI](https://docs.stripe.com/stripe-cli) (on Windows: `scoop bucket add stripe https://github.com/stripe/scoop-stripe-cli.git; scoop install stripe`, or unzip the Windows release from GitHub), then in a second PowerShell window:
+
+     ```powershell
+     stripe login
+     stripe listen --forward-to localhost:8000/api/stripe/webhook
+     ```
+
+     It prints a signing secret (`whsec_...`). Put it in `.env` as `STRIPE_WEBHOOK_SECRET` and restart `python -m sociai.web`. Keep `stripe listen` running while you test.
+6. `PUBLIC_URL` is where Stripe sends people back to: `http://localhost:8000` locally. On Render it defaults to your Render URL.
 
 ## Run it locally (Windows PowerShell)
 
@@ -133,6 +165,11 @@ All settings are environment variables, or lines in `.env` (see `.env.example`).
 | `SUPABASE_SERVICE_ROLE_KEY` | (required) | Secret (service_role) key. Server only: it changes credits through the database functions. |
 | `SOCIAI_GLOBAL_DAILY_LIMIT` | 100 | Research + draft jobs per UTC day across all users. |
 | `SOCIAI_RESEARCH_MODEL`, `SOCIAI_DRAFT_MODEL` | `claude-sonnet-5-5` | Model per step. See "Models and cost" above. |
+| `STRIPE_SECRET_KEY` | unset | Stripe **test** secret key (`sk_test_...`). Payments are off without it; live keys are refused. |
+| `STRIPE_WEBHOOK_SECRET` | unset | Signing secret of the webhook endpoint (`whsec_...`), or the one `stripe listen` prints locally. |
+| `STRIPE_PRICE_PACK` | unset | Price id of the 20-credit pack. |
+| `STRIPE_PRICE_MONTHLY` | unset | Price id of the monthly plan (30 credits a month). |
+| `PUBLIC_URL` | Render URL, else `http://localhost:8000` | Base of Checkout's success and cancel URLs and the portal's return URL. |
 | `SOCIAI_TRUST_PROXY` | off | Set to `1` behind a proxy (Render) so the per-IP limit sees the real client IP from `X-Forwarded-For`. |
 | `PORT` | unset | Set by Render. The server listens on `0.0.0.0:$PORT`; without it, `127.0.0.1:8000`. |
 
@@ -142,7 +179,7 @@ The repo includes a `render.yaml` blueprint (a Python web service on Python 3.13
 
 1. Do the Supabase setup above, including the migration.
 2. Push this repo to GitHub, then in Render choose **New > Blueprint** and pick the repo.
-3. Fill in the secrets Render asks for: `ANTHROPIC_API_KEY`, `SUPABASE_URL`, `SUPABASE_ANON_KEY`, `SUPABASE_SERVICE_ROLE_KEY`.
+3. Fill in the secrets Render asks for: `ANTHROPIC_API_KEY`, `SUPABASE_URL`, `SUPABASE_ANON_KEY`, `SUPABASE_SERVICE_ROLE_KEY`, and for payments `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`, `STRIPE_PRICE_PACK`, `STRIPE_PRICE_MONTHLY` (see Stripe setup; the webhook endpoint needs your Render URL, so you can add its secret after the first deploy).
 4. After the first deploy, add the Render URL to Supabase's Site URL and Redirect URLs (step 3 above).
 
 Things to know:
@@ -161,6 +198,7 @@ Things to know:
 - `sociai/config.py`: settings and the `.env` loader. `sociai/supabase.py`: the small Supabase client the server uses.
 - `sociai/disposable_domains.txt`: email domains that can't use the app.
 - `sociai/resume.py`: checks uploaded resumes and extracts their text (PDF, DOCX).
+- `sociai/billing.py`: Stripe Checkout, the customer portal, and webhook verification.
 - `supabase/migrations/`: database tables, row-level security, credit functions, and the resumes Storage bucket.
 - `.env.example`: every setting, with comments.
 - `render.yaml`: Render deploy blueprint.
@@ -171,6 +209,7 @@ Things to know:
 
 - **Desk**: start new outreach ("Who would you like to reach out to?") and pick up anything saved in your account. New outreach starts from your profile.
 - **Profile**: your background, default format, writing samples and resume, plus account deletion.
+- **Pricing** and **Account**: buy credits or the monthly plan, see purchases and credit activity, manage the subscription.
 - **Research**: a live map of the real searches and page reads the server reports, plus a timestamped field log.
 - **Review**: cited facts (each with a source card), recent work, cautions, and threads to choose. Your corrections are marked as yours and sent to the draft step.
 - **Draft**: an editor where placeholders are highlighted inline. Refine tone and length (your edits are kept), regenerate, switch between versions, and copy the message. Nothing is ever sent for you.
