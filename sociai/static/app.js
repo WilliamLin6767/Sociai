@@ -776,7 +776,10 @@ function focusMain(route) {
   if (h) { h.setAttribute("tabindex", "-1"); h.focus({ preventScroll: true }); }
 }
 
-addEventListener("hashchange", () => render());
+addEventListener("hashchange", () => {
+  render();
+  window.fbq?.("track", "PageView"); // screens change without a page load; count each one for the Meta Pixel
+});
 
 /* ───────── Bar ───────── */
 
