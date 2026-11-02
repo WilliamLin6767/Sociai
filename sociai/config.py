@@ -54,6 +54,8 @@ class Settings:
     stripe_price_pack: str = ""
     stripe_price_monthly: str = ""
     stripe_api_base: str | None = None  # tests point this at a local fake Stripe
+    stripe_mode: str = "test"           # "test" or "live"; the key and events must match it
+    sentry_dsn: str = ""                # optional error monitoring
 
     @classmethod
     def from_env(cls):
@@ -69,6 +71,8 @@ class Settings:
             stripe_webhook_secret=os.environ.get("STRIPE_WEBHOOK_SECRET", ""),
             stripe_price_pack=os.environ.get("STRIPE_PRICE_PACK", ""),
             stripe_price_monthly=os.environ.get("STRIPE_PRICE_MONTHLY", ""),
+            stripe_mode=(os.environ.get("SOCIAI_STRIPE_MODE") or "test").strip().lower(),
+            sentry_dsn=os.environ.get("SENTRY_DSN", "").strip(),
         )
 
     def missing(self):

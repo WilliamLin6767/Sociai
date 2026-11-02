@@ -1,4 +1,8 @@
-"""Stripe payments (test mode only): Checkout, the customer portal, and webhooks.
+"""Stripe payments: Checkout, the customer portal, and webhooks.
+
+SOCIAI_STRIPE_MODE picks test or live (default test). The key must match the mode
+(sk_test_/rk_test_ in test, sk_live_/rk_live_ in live) or payments stay off, and only
+events from the same mode can add credits. Test and live never mix.
 
 Two products, set up in the Stripe dashboard:
   pack     a one-time price for 20 credits      (STRIPE_PRICE_PACK)
@@ -24,6 +28,7 @@ PLANS = {
 SUBSCRIBED = ("active", "trialing", "past_due", "unpaid")
 PRICE_CACHE_SECONDS = 600
 SIGNATURE_TOLERANCE = 300  # seconds; older signed events are refused (replays)
+MODES = {"test": ("sk_test_", "rk_test_"), "live": ("sk_live_", "rk_live_")}
 
 
 class BillingError(Exception):
@@ -44,7 +49,8 @@ class Grant:
 
 
 class Billing:
-    def __init__(self, secret_key, webhook_secret, prices, public_url, api_base=None):
+    def __init__(self, secret_key, webhook_secret, prices, public_url, api_base=None, mode="test"):
+        self.mode = mode
         self.client = stripe.StripeClient(secret_key, base_addresses={"api": api_base} if api_base else None)
         self.webhook_secret = webhook_secret
         self.prices = prices  # plan -> Stripe price id
@@ -59,11 +65,21 @@ class Billing:
                                   ("STRIPE_PRICE_MONTHLY", s.stripe_price_monthly)) if not v]
         if missing:
             return None, f"set {', '.join(missing)}"
-        if not s.stripe_secret_key.startswith(("sk_test_", "rk_test_")):
-            return None, "STRIPE_SECRET_KEY isn't a test-mode key (sk_test_...). Sociai only takes test payments for now"
+        mode = s.stripe_mode
+        if mode not in MODES:
+            return None, f"SOCIAI_STRIPE_MODE is {mode!r}; set it to test or live"
+        key_mode = next((m for m, prefixes in MODES.items() if s.stripe_secret_key.startswith(prefixes)), None)
+        if key_mode != mode:
+            what = f"a {key_mode}-mode key" if key_mode else "not a Stripe secret key (sk_... or rk_...)"
+            return None, (f"SOCIAI_STRIPE_MODE is {mode} but STRIPE_SECRET_KEY is {what}. "
+                          f"Use a {'/'.join(MODES[mode])}... key, or change SOCIAI_STRIPE_MODE")
         billing = cls(s.stripe_secret_key, s.stripe_webhook_secret,
-                      {"pack": s.stripe_price_pack, "monthly": s.stripe_price_monthly}, s.public_url, s.stripe_api_base)
+                      {"pack": s.stripe_price_pack, "monthly": s.stripe_price_monthly}, s.public_url, s.stripe_api_base, mode)
         return billing, None
+
+    @property
+    def live(self):
+        return self.mode == "live"
 
     # ── Shown on the Pricing page ──
 
@@ -126,8 +142,8 @@ class Billing:
 
     def grant_for(self, event: dict) -> Grant | None:
         """What a verified event means for credits, or None if it doesn't add any."""
-        if event.get("livemode"):
-            return None  # test mode only
+        if bool(event.get("livemode")) != self.live:
+            return None  # an event from the other mode never adds credits
         obj = (event.get("data") or {}).get("object") or {}
         kind = event.get("type")
         if kind in ("checkout.session.completed", "checkout.session.async_payment_succeeded"):

@@ -18,6 +18,10 @@ Uses `claude-sonnet-5-5` by default (configurable per step, see below) with serv
 | --- | --- | --- |
 | `SOCIAI_RESEARCH_MODEL` | `claude-sonnet-5-5` | Model for the research step (web search + fetch). |
 | `SOCIAI_DRAFT_MODEL` | `claude-sonnet-5-5` | Model for writing and refining drafts. |
+| `SOCIAI_MAX_SEARCHES` | 5 | Web searches allowed per research run. |
+| `SOCIAI_MAX_FETCHES` | 8 | Pages read (web fetch) per research run. |
+
+The search and fetch limits are the main cost lever: each search costs about $0.01 plus the tokens of what it returns, and every page read adds its text to the input. If a run is paused and continued by the server, the continuation only gets what's left of the budget (at least one of each).
 
 For example, to research with Opus and draft with Sonnet (PowerShell):
 
@@ -81,7 +85,7 @@ Each account has a **Profile** page (account menu > Your profile):
 
 **Privacy:** profiles, writing samples, resume files and their text, and projects are stored in your Supabase project. Row-level security lets each user read and change only their own rows and files.
 
-## Payments (Stripe, test mode)
+## Payments (Stripe)
 
 People buy credits on the **Pricing** page (account menu > Buy credits, or the link in any "out of credits" message):
 
@@ -90,7 +94,18 @@ People buy credits on the **Pricing** page (account menu > Buy credits, or the l
 
 Checkout and the portal are Stripe-hosted pages; Sociai never sees card details. Credits are added only by **signed webhooks** (`checkout.session.completed` for the pack, `invoice.paid` for the plan), never by the browser coming back from Checkout. Each Stripe event id is stored in `credit_ledger.stripe_event_id` (unique), so an event delivered twice adds credits once. Each user gets one Stripe customer, stored on their profile.
 
-**Test mode only:** the server refuses a live key (`sk_live_...`) and ignores live-mode events.
+**Test or live, never mixed.** `SOCIAI_STRIPE_MODE` is `test` (the default) or `live`:
+
+| Mode | Accepted keys | Events that add credits | Pricing page |
+| --- | --- | --- | --- |
+| `test` | `sk_test_...`, `rk_test_...` | test events only | shows "Test mode" and the 4242 test card |
+| `live` | `sk_live_...`, `rk_live_...` | live events only | no test notice; real charges |
+
+A key from the other mode (or an unknown mode) turns payments off, and the startup log says why, e.g. `Payments are OFF: SOCIAI_STRIPE_MODE is test but STRIPE_SECRET_KEY is a live-mode key...`. When payments are on it prints `Payments: Stripe LIVE mode (real charges)` or `Stripe TEST mode`.
+
+**Legal pages.** `/privacy` and `/terms` are static pages (`sociai/static/privacy.html`, `terms.html`) with highlighted `[PLACEHOLDERS]` to fill in: your name or company, contact email, data region, refund window and jurisdiction. They're linked from the sign-in screens, the Pricing page and the footer. Creating an account requires ticking "I agree to the Terms and Privacy Policy"; accounts made earlier are asked once after signing in. The agreement and its version are saved on the Supabase user (`user_metadata.terms_version`, `terms_accepted_at`); bump `TERMS_VERSION` in `app.js` to ask everyone again after a significant change.
+
+**Error monitoring.** Set `SENTRY_DSN` to send server errors to Sentry; without it nothing is loaded or sent. Events carry the error and stack trace only: no request bodies, cookies, auth headers or local variables, and any field that could hold resume text, writing samples or user input is removed, and anything that looks like a key or token is masked (`sociai/monitoring.py`).
 
 ## Supabase setup
 
@@ -134,10 +149,12 @@ update public.profiles set blocked_reason = null where email = 'tester@example.c
 
 ## Stripe setup (test mode)
 
-1. In the [Stripe dashboard](https://dashboard.stripe.com), switch on **Test mode** (top right). Everything below happens in test mode.
+1. In the [Stripe dashboard](https://dashboard.stripe.com), switch on **Test mode** (top right). Everything below happens in test mode. (For real payments, see **Going live** below.)
 2. **Products > Add product**:
-   - "Sociai credit pack": one-off price, e.g. $9.00. Copy its price id (`price_...`) into `STRIPE_PRICE_PACK`.
-   - "Sociai monthly": recurring monthly price, e.g. $15.00. Copy its price id into `STRIPE_PRICE_MONTHLY`.
+   - "Sociai credit pack": one-off price **$14.99**. Copy its price id (`price_...`) into `STRIPE_PRICE_PACK`.
+   - "Sociai monthly": recurring monthly price **$11.99**. Copy its price id into `STRIPE_PRICE_MONTHLY`.
+
+   The Pricing page reads the amounts from these prices in Stripe, so changing a price in Stripe changes the page (within 10 minutes); nothing in the code holds a price.
 3. **Developers > API keys**: copy the secret key (`sk_test_...`) into `STRIPE_SECRET_KEY`.
 4. **Settings > Billing > Customer portal**: click **Activate test link** (or **Save**) once, and allow customers to cancel subscriptions. Without this, "Manage subscription" fails.
 5. **Webhooks**
@@ -184,29 +201,49 @@ All settings are environment variables, or lines in `.env` (see `.env.example`).
 | `SUPABASE_SERVICE_ROLE_KEY` | (required) | Secret (service_role) key. Server only: it changes credits through the database functions. |
 | `SOCIAI_GLOBAL_DAILY_LIMIT` | 100 | Research + draft jobs per UTC day across all users. |
 | `SOCIAI_RESEARCH_MODEL`, `SOCIAI_DRAFT_MODEL` | `claude-sonnet-5-5` | Model per step. See "Models and cost" above. |
-| `STRIPE_SECRET_KEY` | unset | Stripe **test** secret key (`sk_test_...`). Payments are off without it; live keys are refused. |
+| `SOCIAI_STRIPE_MODE` | `test` | `test` or `live`. The secret key and webhook events must be from this mode. |
+| `STRIPE_SECRET_KEY` | unset | Stripe secret key for that mode (`sk_test_...` or `sk_live_...`). Payments are off without it, or if it doesn't match the mode. |
 | `STRIPE_WEBHOOK_SECRET` | unset | Signing secret of the webhook endpoint (`whsec_...`), or the one `stripe listen` prints locally. |
 | `STRIPE_PRICE_PACK` | unset | Price id of the 20-credit pack. |
 | `STRIPE_PRICE_MONTHLY` | unset | Price id of the monthly plan (30 credits a month). |
 | `PUBLIC_URL` | Render URL, else `http://localhost:8000` | Base of Checkout's success and cancel URLs and the portal's return URL. |
+| `SENTRY_DSN` | unset | Optional. Sends server errors to Sentry, without user content or keys. |
+| `SOCIAI_MAX_SEARCHES`, `SOCIAI_MAX_FETCHES` | 5, 8 | Research budget per run. See "Models and cost". |
 | `SOCIAI_TRUST_PROXY` | off | Set to `1` behind a proxy (Render) so the per-IP limit sees the real client IP from `X-Forwarded-For`. |
 | `PORT` | unset | Set by Render. The server listens on `0.0.0.0:$PORT`; without it, `127.0.0.1:8000`. |
 
 ## Deploy to Render
 
-The repo includes a `render.yaml` blueprint (a Python web service on Python 3.13.3, health-checked at `/healthz`).
+The repo includes a `render.yaml` blueprint (a Python web service on Render's **Starter** plan and Python 3.13.3, health-checked at `/healthz`).
 
 1. Do the Supabase setup above, including the migration.
 2. Push this repo to GitHub, then in Render choose **New > Blueprint** and pick the repo.
-3. Fill in the secrets Render asks for: `ANTHROPIC_API_KEY`, `SUPABASE_URL`, `SUPABASE_ANON_KEY`, `SUPABASE_SERVICE_ROLE_KEY`, and for payments `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`, `STRIPE_PRICE_PACK`, `STRIPE_PRICE_MONTHLY` (see Stripe setup; the webhook endpoint needs your Render URL, so you can add its secret after the first deploy).
+3. Fill in the secrets Render asks for: `ANTHROPIC_API_KEY`, `SUPABASE_URL`, `SUPABASE_ANON_KEY`, `SUPABASE_SERVICE_ROLE_KEY`, `PUBLIC_URL` (your site's address, e.g. `https://sociai.app`), optionally `SENTRY_DSN`, and for payments `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`, `STRIPE_PRICE_PACK`, `STRIPE_PRICE_MONTHLY` (see Stripe setup; the webhook endpoint needs your Render URL, so you can add its secret after the first deploy).
 4. After the first deploy, add the Render URL to Supabase's Site URL and Redirect URLs (step 3 above).
 
 Things to know:
 
 - Credits, limits and job records live in Supabase. The live progress of a running job lives in server memory, so a restart or redeploy drops research in progress; jobs stuck as running for 15 minutes are closed and research is refunded the next time that user starts a job.
-- Render's free plan sleeps after about 15 minutes without traffic, so the first visit after that takes a while to load.
+- The Starter plan stays on. (The free plan sleeps after about 15 minutes without traffic, which also drops running research jobs.)
 - Projects, profiles and resumes are stored in Supabase, so they survive restarts and follow users across browsers.
 - The per-IP limit trusts the first `X-Forwarded-For` address, which a determined user can fake. It slows down casual abuse; it isn't a wall.
+
+## Going live
+
+Do these in order, and test one real purchase with your own card before announcing anything.
+
+1. **Legal pages**: fill in every highlighted `[PLACEHOLDER]` in `sociai/static/privacy.html` and `terms.html` (name or company, contact email, data region, refund window, minimum age, jurisdiction), and check the Anthropic data-use sentence against Anthropic's current commercial terms.
+2. **Stripe account**: finish activating it (business details, bank account for payouts) so live mode is available.
+3. **Live products and prices**: in **live mode** (test mode toggle off), **Products > Add product**: the credit pack, one-off **$14.99**, and the monthly plan, recurring **$11.99**. Test-mode products don't carry over. Copy the two live `price_...` ids into Render's `STRIPE_PRICE_PACK` and `STRIPE_PRICE_MONTHLY`.
+4. **Live key**: **Developers > API keys** (live mode): copy the secret key (`sk_live_...`, or a restricted `rk_live_...` key) into Render's `STRIPE_SECRET_KEY`, and set `SOCIAI_STRIPE_MODE` to `live`.
+5. **Live webhook**: **Developers > Webhooks > Add endpoint** in live mode, URL `https://<your-domain>/api/stripe/webhook`, events `checkout.session.completed`, `checkout.session.async_payment_succeeded`, `invoice.paid`. Copy its signing secret (`whsec_...`, different from the test one) into Render's `STRIPE_WEBHOOK_SECRET`.
+6. **Customer portal (live)**: **Settings > Billing > Customer portal**, save it once in live mode and allow cancelling subscriptions.
+7. **`PUBLIC_URL`**: set it to the address customers use (custom domain or the `onrender.com` URL), and add that address to Supabase's Site URL and Redirect URLs.
+8. **Email sending**: Supabase's built-in email only sends to your team, a few an hour, so confirmation and password-reset emails would fail for customers. Set up your own SMTP sender (Resend, Postmark, SendGrid...) in **Authentication > Emails > SMTP Settings**, with a sender address on your domain (and its SPF/DKIM records), then raise **Authentication > Rate Limits** for emails.
+9. **Claude spend limit**: in the [Claude Console](https://console.anthropic.com), **Settings > Limits**, set a monthly spend limit (and an email alert below it) for the organization behind `ANTHROPIC_API_KEY`. Keep `SOCIAI_GLOBAL_DAILY_LIMIT` as a second backstop.
+10. **Monitoring**: optionally create a Sentry project and set `SENTRY_DSN`.
+11. **Deploy and check the log**: it should say `Payments: Stripe LIVE mode (real charges)`. If it says `Payments are OFF`, the reason is on the same line. The Pricing page should show $14.99 and $11.99 and no "Test mode" note.
+12. **One real purchase**: buy the pack with your own card, confirm +20 credits and a `[stripe] ... granted` log line, then refund yourself in the Stripe dashboard.
 
 ## Files
 
@@ -217,7 +254,8 @@ Things to know:
 - `sociai/config.py`: settings and the `.env` loader. `sociai/supabase.py`: the small Supabase client the server uses.
 - `sociai/disposable_domains.txt`: email domains that can't use the app.
 - `sociai/resume.py`: checks uploaded resumes and extracts their text (PDF, DOCX).
-- `sociai/billing.py`: Stripe Checkout, the customer portal, and webhook verification.
+- `sociai/billing.py`: Stripe Checkout, the customer portal, webhook verification, and the test/live mode rules.
+- `sociai/monitoring.py`: optional Sentry setup and the scrubbing of events.
 - `supabase/migrations/`: database tables, row-level security, credit functions, and the resumes Storage bucket.
 - `.env.example`: every setting, with comments.
 - `render.yaml`: Render deploy blueprint.

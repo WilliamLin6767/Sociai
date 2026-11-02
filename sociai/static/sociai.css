@@ -820,3 +820,27 @@ body.focus-on .bar:hover, body.focus-on .bar:focus-within { opacity: 1; }
   .busy-line::after { left: 0; width: 100%; opacity: .6; }
   .loom-svg.is-waiting .l-halo { opacity: .6; transform: scale(1.3); }
 }
+
+/* ───────── Terms, legal pages, footer ───────── */
+.agree { display: flex; align-items: flex-start; gap: 10px; margin-top: var(--s3); font-size: 14px; color: var(--ink-2); line-height: 1.45; cursor: pointer; }
+.agree input { width: 17px; height: 17px; margin: 1px 0 0; flex: none; accent-color: var(--brand-green); cursor: pointer; }
+.agree .link-btn { font-size: inherit; }
+.gate-legal { margin: var(--s2) 0 0; display: flex; gap: 8px; font-size: 12.5px; color: var(--ink-3); }
+.gate-legal a { color: var(--ink-3); text-underline-offset: 3px; text-decoration-color: var(--rule); }
+.gate-legal a:hover { color: var(--ink); }
+.site-foot { border-top: 1px solid var(--rule-2); margin-top: var(--s8); padding: var(--s5) 0 calc(var(--s5) + 72px); font-size: 13px; color: var(--ink-3); }
+.site-foot-inner { display: flex; justify-content: space-between; align-items: center; gap: var(--s4); flex-wrap: wrap; }
+.site-foot nav { display: flex; gap: var(--s4); }
+.site-foot a { color: var(--ink-3); text-underline-offset: 3px; text-decoration-color: var(--rule); }
+.site-foot a:hover { color: var(--ink); }
+.legal-body .bar { position: static; }
+.legal { padding: var(--s6) 0 var(--s8); }
+.legal .row + .row { margin-top: var(--s6); }
+.legal .col p, .legal li { font-size: 15.5px; line-height: 1.65; color: var(--ink-2); max-width: 68ch; }
+.legal .col p { margin: 0 0 var(--s3); }
+.legal ul { margin: 0 0 var(--s3); padding-left: 1.2em; }
+.legal li + li { margin-top: 6px; }
+.legal b { color: var(--ink); font-weight: 600; }
+.legal h1 { margin: 0 0 var(--s2); }
+/* Placeholders the owner fills in before going live */
+.fill { background: color-mix(in oklab, var(--ochre) 16%, transparent); color: var(--ink); border-radius: 2px; padding: 0 3px; font-family: var(--mono); font-size: .86em; }

@@ -27,6 +27,7 @@ changes them only through the database functions defined there.
   POST /api/billing-portal -> {url} of the Stripe customer portal
   POST /api/stripe/webhook public; Stripe-signed events add credits (once per event)
   GET  /healthz            -> {"ok": true}
+  GET  /privacy, /terms    the Privacy Policy and Terms (static pages)
 
 Profile and project calls run as the user (their own token), so the database's
 row-level security applies to them as well.
@@ -51,6 +52,7 @@ from urllib.parse import parse_qs, urlparse
 import anthropic
 import stripe
 
+from . import monitoring
 from .billing import PLANS, Billing, BillingError
 from .config import Settings, is_disposable, load_env
 from .engine import Dossier, Engine, OutreachRequest, Refused, RunUsage
@@ -72,6 +74,7 @@ MAX_WEBHOOK_BODY = 1024 * 1024
 UUID = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
 TOKEN_TTL = 60     # seconds a verified access token is trusted before asking Supabase again
 PROJECT_ID = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+PAGES = {"/": "index.html", "/index.html": "index.html", "/privacy": "privacy.html", "/terms": "terms.html"}
 
 # Set by setup(): main() loads .env first; tests pass their own settings and engine.
 settings: Settings = Settings()
@@ -106,6 +109,7 @@ def public_error(e: Exception) -> str:
     traceback.print_exception(e)
     if isinstance(e, Refused):
         return str(e)
+    monitoring.capture(e)
     busy = isinstance(e, (anthropic.RateLimitError, anthropic.APIConnectionError)) or (
         isinstance(e, anthropic.APIStatusError) and e.status_code >= 500)
     return "The AI service is busy right now. Try again in a minute." if busy else GENERIC_ERROR
@@ -235,7 +239,7 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(200, {"ok": True})
         if url.path.startswith("/api/"):
             return self._api(self._get_api, url)
-        name = "index.html" if url.path in ("/", "/index.html") else url.path.lstrip("/")
+        name = PAGES.get(url.path) or url.path.lstrip("/")
         path = (STATIC / name).resolve()
         if not path.is_file() or STATIC.resolve() not in path.parents:
             return self._send(404, b"Not found", "text/plain")
@@ -260,12 +264,18 @@ class Handler(BaseHTTPRequestHandler):
             self._json(r.code, {"error": str(r), **r.extra})
         except SupabaseError as e:
             print(f"[supabase] {e}", flush=True)
+            monitoring.capture(e)
             self._json(503, {"error": "Sociai can't reach its account service right now. Try again in a minute."})
         except BillingError as e:
             self._json(e.status, {"error": str(e)})
         except stripe.StripeError as e:
             print(f"[stripe] {type(e).__name__}: {e}", flush=True)
+            monitoring.capture(e)
             self._json(502, {"error": "Payments aren't available right now. Try again in a minute."})
+        except Exception as e:  # a bug: log it, report it, and answer instead of dropping the connection
+            traceback.print_exception(e)
+            monitoring.capture(e)
+            self._json(500, {"error": GENERIC_ERROR})
 
     def _get_api(self, url):
         if url.path == "/api/config":
@@ -283,7 +293,7 @@ class Handler(BaseHTTPRequestHandler):
         if url.path == "/api/pricing":
             if not billing:
                 return self._json(200, {"enabled": False})
-            return self._json(200, {"enabled": True, "test_mode": True, "plans": billing.plans()})
+            return self._json(200, {"enabled": True, "test_mode": not billing.live, "plans": billing.plans()})
         if url.path == "/api/projects":
             query = parse_qs(url.query).get("q", [""])[0][:200]
             return self._json(200, {"projects": supa.rpc_as(self._token, "sociai_list_projects", p_query=query)})
@@ -596,6 +606,7 @@ class Handler(BaseHTTPRequestHandler):
 def main():
     load_env()
     setup(Settings.from_env())
+    monitoring_on = monitoring.init(settings.sentry_dsn, environment=f"stripe-{settings.stripe_mode}")
     port = os.environ.get("PORT")
     host, port = ("0.0.0.0", int(port)) if port else ("127.0.0.1", 8000)
     server = ThreadingHTTPServer((host, port), Handler)
@@ -607,10 +618,13 @@ def main():
         print(f"Accounts are OFF: set {', '.join(settings.missing())} (see .env.example). "
               "Sign-in and the API won't work until then.", flush=True)
     if billing:
-        print(f"Payments: Stripe test mode. Customers return to {settings.public_url}."
+        print(f"Payments: Stripe {billing.mode.upper()} mode{' (real charges)' if billing.live else ''}. "
+              f"Customers return to {settings.public_url}."
               + ("" if settings.stripe_webhook_secret else " STRIPE_WEBHOOK_SECRET is missing, so purchases won't add credits."), flush=True)
     else:
         print(f"Payments are OFF: {billing_off_reason}.", flush=True)
+    print("Error monitoring: Sentry is on (no request bodies, resumes, samples or keys are sent)." if monitoring_on
+          else "Error monitoring: off (set SENTRY_DSN to turn on Sentry).", flush=True)
     server.serve_forever()
 
 
