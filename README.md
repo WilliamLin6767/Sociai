@@ -44,71 +44,107 @@ python -m sociai.compare --models claude-sonnet-5-5 claude-haiku-5-5
 
 It prints cost, time and token counts per model and step, then the two drafts side by side. Haiku is supported (with basic web tools and no refusal fallback), but untested.
 
-## Run it
+## Accounts and credits
 
-```bash
-pip install -r requirements.txt
-export ANTHROPIC_API_KEY=sk-ant-...      # web search must be enabled for your org in the Claude Console
+People sign in with an email magic link (Supabase Auth); there are no passwords. Each new account gets **2 free credits**. **1 credit = one research run plus up to 3 drafts or revisions for that person.** A research run that fails is refunded automatically. The balance shows in the header.
 
-# Web UI
-python -m sociai.web                     # open http://localhost:8000
+Abuse limits are enforced in the database:
 
-# CLI demo: undergrad emailing a professor about research
-python -m sociai --example examples/student_professor.json
+- Disposable email domains (`sociai/disposable_domains.txt`) can't use the app.
+- At most 3 new accounts per IP address per day.
+- At most 2 research or draft jobs running at once per user.
+- A global cap on jobs per UTC day (`SOCIAI_GLOBAL_DAILY_LIMIT`, default 100).
 
-# CLI, any use case
-python -m sociai --target "Jane Doe, recruiter at Stripe" \
-  --goal "Get a referral for the new-grad backend role" \
-  --background "CS senior, interned at Plaid on payments infra" \
-  --samples my_email_1.txt my_email_2.txt --channel linkedin --max-words 120
+The browser never sees raw API errors; details go to the server log.
+
+## Supabase setup
+
+1. **Create a project** at [supabase.com/dashboard](https://supabase.com/dashboard) (**New project**).
+2. **Email sign-in**: **Authentication > Sign In / Providers > Email**. Make sure Email is enabled and **Confirm email** is on.
+3. **Redirect URLs**: **Authentication > URL Configuration**.
+   - Site URL: your Render URL (e.g. `https://sociai.onrender.com`), or `http://localhost:8000` while you only run locally.
+   - Redirect URLs: add `http://localhost:8000/**` and `https://<your-app>.onrender.com/**`.
+4. **Email delivery**: Supabase's built-in email service only sends to your project's team members, at a very low rate. For testers, set up your own SMTP provider (Resend, Postmark, SendGrid...) under **Authentication > Emails > SMTP Settings**, then raise the email limit under **Authentication > Rate Limits**.
+5. **Run the migration** (creates the `profiles`, `credit_ledger` and `jobs` tables, row-level security, the free-credit trigger and the credit functions). Either:
+   - **SQL Editor > New query**, paste the contents of `supabase/migrations/20261101000000_accounts_and_credits.sql`, and **Run**; or
+   - with the Supabase CLI: `npx supabase login`, `npx supabase link --project-ref <your-project-ref>`, then `npx supabase db push`.
+6. **Keys**: **Project Settings > API Keys** gives the publishable (anon) key and the secret (service_role) key; the project URL is under **Project Settings > Data API**. Put them in `.env` locally and in Render's environment.
+
+Handy SQL (SQL Editor) for running the test:
+
+```sql
+-- give a tester 5 more credits
+update public.profiles set credits = credits + 5 where email = 'tester@example.com';
+insert into public.credit_ledger (user_id, delta, reason)
+  select id, 5, 'manual_grant' from public.profiles where email = 'tester@example.com';
+
+-- unblock an account flagged as disposable or over the per-IP limit
+update public.profiles set blocked_reason = null where email = 'tester@example.com';
 ```
 
-On Windows PowerShell, set the key with `$env:ANTHROPIC_API_KEY="sk-ant-..."` instead of `export`.
-
-### Run locally with the invite gate on (Windows PowerShell)
+## Run it locally (Windows PowerShell)
 
 ```powershell
-$env:ANTHROPIC_API_KEY="sk-ant-..."; $env:SOCIAI_ACCESS_CODES="test123"; python -m sociai.web
+py -m venv .venv
+.\.venv\Scripts\Activate.ps1
+pip install -r requirements.txt
+Copy-Item .env.example .env
+notepad .env          # fill in ANTHROPIC_API_KEY and the three SUPABASE_ values
+python -m sociai.web  # open http://localhost:8000
 ```
 
-Open http://localhost:8000 and enter `test123` when asked for an invite code. To turn the gate off again in the same window, run `Remove-Item Env:SOCIAI_ACCESS_CODES`.
+On startup the server prints which settings it loaded from `.env` (names only, never values). Values in `.env` win over variables already set in Windows, so an old `setx ANTHROPIC_API_KEY` can't shadow the file.
+
+The command line tools don't need Supabase, only the Claude key:
+
+```powershell
+python -m sociai --example examples/student_professor.json
+python -m sociai --target "Jane Doe, recruiter at Stripe" --goal "Get a referral for the new-grad backend role" --channel linkedin --max-words 120
+```
+
+## Settings
+
+All settings are environment variables, or lines in `.env` (see `.env.example`).
+
+| Variable | Default | What it does |
+| --- | --- | --- |
+| `ANTHROPIC_API_KEY` | (required) | Claude API key. Web search must be enabled for your org. |
+| `SUPABASE_URL` | (required) | Your Supabase project URL. |
+| `SUPABASE_ANON_KEY` | (required) | Publishable (anon) key. Sent to the browser for sign-in. |
+| `SUPABASE_SERVICE_ROLE_KEY` | (required) | Secret (service_role) key. Server only: it changes credits through the database functions. |
+| `SOCIAI_GLOBAL_DAILY_LIMIT` | 100 | Research + draft jobs per UTC day across all users. |
+| `SOCIAI_RESEARCH_MODEL`, `SOCIAI_DRAFT_MODEL` | `claude-sonnet-5-5` | Model per step. See "Models and cost" above. |
+| `SOCIAI_TRUST_PROXY` | off | Set to `1` behind a proxy (Render) so the per-IP limit sees the real client IP from `X-Forwarded-For`. |
+| `PORT` | unset | Set by Render. The server listens on `0.0.0.0:$PORT`; without it, `127.0.0.1:8000`. |
 
 ## Deploy to Render
 
 The repo includes a `render.yaml` blueprint (a Python web service on Python 3.13.3, health-checked at `/healthz`).
 
-1. Push this repo to GitHub.
-2. In the Render dashboard choose **New > Blueprint**, pick the repo, and Render reads `render.yaml`.
-3. When Render asks, fill in the secrets:
-   - `ANTHROPIC_API_KEY`: your Claude API key (web search must be enabled for your org).
-   - `SOCIAI_ACCESS_CODES`: comma-separated invite codes, one per tester, e.g. `amy-7f3k,ben-q9x2`. Codes are per person, so limits apply per person.
-4. Deploy, then send each tester the URL and their code.
-
-Settings (environment variables):
-
-| Variable | Default | What it does |
-| --- | --- | --- |
-| `SOCIAI_ACCESS_CODES` | unset | Invite codes. When set, every API call needs a valid code, and server errors are logged instead of shown in the browser. When unset (local dev), there is no gate. |
-| `SOCIAI_DAILY_LIMIT` | 20 | Research + draft runs per code per UTC day. Each code can also run at most 2 at once. |
-| `SOCIAI_GLOBAL_DAILY_LIMIT` | 200 | Runs per UTC day across all testers, as a spending backstop. Applies even without the gate. |
-| `SOCIAI_RESEARCH_MODEL`, `SOCIAI_DRAFT_MODEL` | `claude-sonnet-5-5` | Model per step. See "Models and cost" above. |
-| `PORT` | unset | Set by Render. The server listens on `0.0.0.0:$PORT`; without it, `127.0.0.1:8000`. |
+1. Do the Supabase setup above, including the migration.
+2. Push this repo to GitHub, then in Render choose **New > Blueprint** and pick the repo.
+3. Fill in the secrets Render asks for: `ANTHROPIC_API_KEY`, `SUPABASE_URL`, `SUPABASE_ANON_KEY`, `SUPABASE_SERVICE_ROLE_KEY`.
+4. After the first deploy, add the Render URL to Supabase's Site URL and Redirect URLs (step 3 above).
 
 Things to know:
 
-- Usage counts and running jobs live in memory. A restart or redeploy resets the daily counts and drops any research in progress (the page shows it as interrupted, with a retry).
-- Render's free plan sleeps after about 15 minutes without traffic, so the first visit after that takes a while to load. Change `plan` in `render.yaml` if that matters.
-- Projects are stored in each tester's browser, not on the server.
-- To revoke a tester, remove their code from `SOCIAI_ACCESS_CODES` and redeploy.
+- Credits, limits and job records live in Supabase. The live progress of a running job lives in server memory, so a restart or redeploy drops research in progress; jobs stuck as running for 15 minutes are closed and research is refunded the next time that user starts a job.
+- Render's free plan sleeps after about 15 minutes without traffic, so the first visit after that takes a while to load.
+- Projects (briefs, research, drafts) are stored in each user's browser, separately per account.
+- The per-IP limit trusts the first `X-Forwarded-For` address, which a determined user can fake. It slows down casual abuse; it isn't a wall.
 
 ## Files
 
 - `sociai/engine.py`: the engine (`Engine.research`, `Engine.draft`, `Engine.run`). Use-case agnostic.
 - `sociai/cli.py`: command line.
 - `sociai/compare.py`: runs one case on several models and compares cost, time and drafts.
-- `sociai/web.py`: web server, standard library only. Research and drafting run as background jobs (`/api/research`, `/api/draft`, polled at `/api/jobs/<id>`), so the page shows live progress and survives a refresh. The original `/research` and `/draft` endpoints still work. Also serves `/healthz`, the optional invite gate and the usage limits.
+- `sociai/web.py`: web server. Checks the Supabase access token on every `/api/*` call, starts research and drafting as background jobs (`/api/research`, `/api/draft`, polled at `/api/jobs/<id>`) after the database has approved and charged them, and serves `/healthz`.
+- `sociai/config.py`: settings and the `.env` loader. `sociai/supabase.py`: the small Supabase client the server uses.
+- `sociai/disposable_domains.txt`: email domains that can't use the app.
+- `supabase/migrations/`: database tables, row-level security and credit functions.
+- `.env.example`: every setting, with comments.
 - `render.yaml`: Render deploy blueprint.
-- `sociai/static/`: the web app (plain HTML, CSS and ES modules, no build step). Projects are saved in the browser's localStorage.
+- `sociai/static/`: the web app (plain HTML, CSS and ES modules, no build step; supabase-js comes from a pinned CDN URL). Projects are saved in the browser's localStorage, per account.
 - `examples/`: the student-to-professor demo, with two writing samples.
 
 ## Web app

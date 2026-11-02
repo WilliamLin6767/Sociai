@@ -2,7 +2,8 @@
 // single saved project. Views are plain functions that render into #main and return
 // a cleanup; store updates tell them what changed.
 
-import { store } from "./store.js";
+import { store, useUser } from "./store.js";
+import { accessToken, initAuth, onAuthChange, refreshSession, sendMagicLink, signOut } from "./auth.js";
 import { Loom, domain, normUrl } from "./loom.js";
 
 /* ───────── Helpers ───────── */
@@ -194,70 +195,167 @@ const currentVersion = (p) => p.draft.versions[p.draft.current] || null;
 
 /* ───────── Server jobs ───────── */
 
-// Invite code: kept in this browser and sent with every API call. A 401 opens the invite screen.
-const CODE_KEY = "sociai.code";
-const readCode = () => { try { return localStorage.getItem(CODE_KEY) || ""; } catch { return ""; } };
-const saveCode = (c) => { try { c ? localStorage.setItem(CODE_KEY, c) : localStorage.removeItem(CODE_KEY); } catch {} };
+// Account: the signed-in user's email and credit balance. Every API call carries the
+// Supabase access token; a 401 means the session has ended, so the sign-in screen returns.
+const account = { email: "", credits: null };
 
-async function api(path, body) {
+async function api(path, body, retried = false) {
   const headers = {};
-  const code = readCode();
-  if (code) headers["X-Sociai-Code"] = code;
+  const token = await accessToken();
+  if (token) headers.Authorization = `Bearer ${token}`;
   if (body !== undefined) headers["Content-Type"] = "application/json";
   const res = await fetch(path, body === undefined ? { headers } : { method: "POST", headers, body: JSON.stringify(body) });
   let data;
   try { data = await res.json(); } catch { data = { error: `The server answered with an error (${res.status}).` }; }
-  if (res.status === 401) showGate(!!code);
+  if (res.status === 401) {
+    if (!retried && token && (await refreshSession())) return api(path, body, true);
+    showSignIn({ message: "Your session ended. Sign in again to continue." });
+  }
+  if (typeof data?.credits === "number") setCredits(data.credits);
   return { http: res.status, data };
 }
 
-let gateOpen = false;
-function showGate(rejected) {
-  if (gateOpen) return;
-  gateOpen = true;
-  const gate = document.createElement("div");
-  gate.className = "gate";
-  gate.setAttribute("role", "dialog");
-  gate.setAttribute("aria-modal", "true");
-  gate.setAttribute("aria-labelledby", "gate-title");
-  gate.innerHTML = `<form class="gate-card" novalidate>
-    ${MARK}
-    <p class="label">Invite only</p>
-    <h1 class="h2" id="gate-title">Enter your invite code</h1>
-    <p class="muted">Sociai is open to a small group of testers for now. Your code is saved in this browser.</p>
-    <input class="who-input" id="gate-code" aria-labelledby="gate-title" aria-describedby="gate-err" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="Invite code">
-    <p class="field-error" id="gate-err" ${rejected ? "" : "hidden"}>${rejected ? "Your saved code wasn't accepted. Enter it again." : ""}</p>
-    <button type="submit" class="btn btn-primary">Continue <span class="arrow">${I.arrow}</span></button>
-  </form>`;
+const creditLabel = (n) => (n === null ? "…" : `${n} credit${n === 1 ? "" : "s"}`);
+const creditNote = () => account.credits === 0
+  ? "You're out of credits. Each credit covers one research run and up to 3 drafts."
+  : `Uses 1 credit, which includes up to 3 drafts${account.credits === null ? "" : `. You have ${creditLabel(account.credits)}`}. Sociai never sends anything for you.`;
+
+function setCredits(n) {
+  const changed = account.credits !== null && account.credits !== n;
+  account.credits = n;
+  const el = $("#credits-n");
+  if (el) {
+    el.textContent = creditLabel(n);
+    if (changed) { el.classList.remove("bump"); void el.offsetWidth; el.classList.add("bump"); }
+  }
+  const note = $("#credit-note");
+  if (note) note.textContent = creditNote();
+}
+
+async function refreshAccount() {
+  try {
+    const { http, data } = await api("/api/me");
+    if (http !== 200) return;
+    account.email = data.email || account.email;
+    if (data.blocked) toast(data.blocked, { ms: 12000 });
+  } catch {}
+}
+
+const accountButton = () => `<div class="account">
+  <button type="button" class="credits-btn" data-act="account" aria-haspopup="true" aria-expanded="false" aria-label="Account and credits">
+    <span class="credits-dot" aria-hidden="true"></span><span id="credits-n">${creditLabel(account.credits)}</span></button></div>`;
+
+function toggleAccountMenu(btn) {
+  if ($(".account .menu")) return closeMenus();
+  closeMenus();
+  btn.setAttribute("aria-expanded", "true");
+  btn.insertAdjacentHTML("afterend", `<div class="menu menu-down" role="menu">
+    <p class="menu-head"><span class="label">Signed in as</span><span class="menu-email">${esc(account.email)}</span></p>
+    <p class="menu-note">${creditLabel(account.credits)} left. One credit covers a research run plus up to 3 drafts or revisions for that person.</p>
+    <hr><button type="button" class="mi" role="menuitem" data-act="sign-out">Sign out</button></div>`);
+  $(".account .mi").focus();
+}
+
+// Sign-in screen: shown before the Desk, and again whenever the session ends.
+let signInEl = null;
+
+function showSignIn({ message = "", email = "" } = {}) {
+  if (signInEl) { if (message && $("#signin-err", signInEl)) showSignInError(message); return; }
+  closeMenus(); closeDrawer(); closePop();
+  signInEl = document.createElement("div");
+  signInEl.className = "gate";
+  signInEl.setAttribute("role", "dialog");
+  signInEl.setAttribute("aria-modal", "true");
+  signInEl.setAttribute("aria-labelledby", "signin-title");
   for (const id of ["bar", "main"]) document.getElementById(id).inert = true;
-  document.body.appendChild(gate);
-  const input = $("#gate-code", gate), err = $("#gate-err", gate), btn = $("button", gate);
+  document.body.appendChild(signInEl);
+  drawSignInForm(email, message);
+}
+
+function hideSignIn() {
+  signInEl?.remove();
+  signInEl = null;
+  for (const id of ["bar", "main"]) document.getElementById(id).inert = false;
+}
+
+function showSignInError(message) {
+  const el = $("#signin-err", signInEl);
+  el.textContent = message;
+  el.hidden = false;
+}
+
+function drawSignInForm(email = "", message = "") {
+  signInEl.innerHTML = `<form class="gate-card" novalidate>
+    ${MARK}
+    <p class="label">Sociai</p>
+    <h1 class="h2" id="signin-title">Sign in to Sociai</h1>
+    <p class="muted">We'll email you a link that signs you in. No password needed. New here? The same link creates your account, with 2 free credits.</p>
+    <label class="vh" for="signin-email">Email address</label>
+    <input class="who-input" id="signin-email" type="email" autocomplete="email" autocapitalize="off" spellcheck="false" placeholder="you@example.com" value="${esc(email)}" aria-describedby="signin-err">
+    <p class="field-error" id="signin-err" ${message ? "" : "hidden"}>${esc(message)}</p>
+    <button type="submit" class="btn btn-primary">Email me a sign-in link <span class="arrow">${I.arrow}</span></button>
+  </form>`;
+  const input = $("#signin-email", signInEl), btn = $("button[type=submit]", signInEl);
   input.focus();
-  $("form", gate).addEventListener("submit", async (e) => {
+  $("form", signInEl).addEventListener("submit", async (e) => {
     e.preventDefault();
-    const code = input.value.trim();
-    if (!code) { input.focus(); return; }
+    const addr = input.value.trim();
+    if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(addr)) return showSignInError("Enter your full email address.");
     btn.disabled = true;
-    saveCode(code);
-    let ok = false;
-    try { ok = (await api("/api/session")).http === 200; } catch {
-      err.textContent = "Couldn't reach the Sociai server. Try again.";
-      err.hidden = false; btn.disabled = false; return;
+    try {
+      const check = await fetch("/api/check-email", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ email: addr }) });
+      if (!check.ok) {
+        const d = await check.json().catch(() => ({}));
+        btn.disabled = false;
+        return showSignInError(d.error || "That email address can't be used.");
+      }
+      const { error } = await sendMagicLink(addr);
+      if (error) throw error;
+      drawCheckInbox(addr);
+    } catch (err) {
+      btn.disabled = false;
+      showSignInError(err?.status === 429
+        ? "Too many sign-in emails were requested. Wait a minute, then try again."
+        : "Couldn't send the link. Check the address and your connection, then try again.");
     }
-    btn.disabled = false;
-    if (!ok) {
-      saveCode("");
-      err.textContent = "That code didn't work. Check it and try again.";
-      err.hidden = false;
-      input.select();
-      return;
-    }
-    gate.remove();
-    gateOpen = false;
-    for (const id of ["bar", "main"]) document.getElementById(id).inert = false;
-    toast("You're in. Welcome to Sociai.");
-    focusMain(view?.route || { view: "desk" });
   });
+}
+
+function drawCheckInbox(addr) {
+  signInEl.innerHTML = `<div class="gate-card" role="status">
+    ${MARK}
+    <p class="label">Check your email</p>
+    <h1 class="h2" id="signin-title">Your sign-in link is on its way</h1>
+    <p class="muted">We sent it to <b>${esc(addr)}</b>. Open it on this device to sign in here. It can take a minute, and sometimes lands in spam.</p>
+    <div class="gate-actions"><button type="button" class="btn btn-line btn-sm" id="resend" disabled>Resend link</button>
+      <button type="button" class="link-btn" id="other-email">Use a different email</button></div>
+  </div>`;
+  const resend = $("#resend", signInEl);
+  let left = 60;
+  const tick = () => {
+    if (!resend.isConnected) return;
+    resend.disabled = left > 0;
+    resend.textContent = left > 0 ? `Resend link (${left}s)` : "Resend link";
+    if (left-- > 0) setTimeout(tick, 1000);
+  };
+  tick();
+  resend.onclick = async () => {
+    resend.disabled = true;
+    const { error } = await sendMagicLink(addr);
+    if (error) { resend.disabled = false; return toast("Couldn't resend yet. Wait a little and try again."); }
+    left = 60; tick();
+    toast("Sent another link.");
+  };
+  $("#other-email", signInEl).onclick = () => drawSignInForm(addr);
+}
+
+function showFatal(title, text) {
+  hideSignIn();
+  signInEl = document.createElement("div");
+  signInEl.className = "gate";
+  signInEl.innerHTML = `<div class="gate-card" role="alert">${MARK}<h1 class="h2">${esc(title)}</h1><p class="muted">${esc(text)}</p></div>`;
+  for (const id of ["bar", "main"]) document.getElementById(id).inert = true;
+  document.body.appendChild(signInEl);
 }
 
 const polling = new Map();
@@ -279,7 +377,7 @@ function poll(id, kind) {
       if (++misses >= 10) { polling.delete(key); return failJob(id, kind, "Lost the connection to the Sociai server. Is it still running?"); }
       return polling.set(key, setTimeout(tick, 1500));
     }
-    if (res.http === 401) return polling.set(key, setTimeout(tick, 2000)); // waits for the invite code, then carries on
+    if (res.http === 401) return polling.set(key, setTimeout(tick, 2000)); // waits for the user to sign in again, then carries on
     if (res.http >= 400) { polling.delete(key); return failJob(id, kind, res.data.error || "This job is no longer running."); }
     const d = res.data;
     if (kind === "research" && d.events?.length) store.update(id, (p) => { p.research.events.push(...d.events); }, "research-events");
@@ -307,7 +405,7 @@ async function startResearch(id) {
     });
   }, "research");
   try {
-    const { data } = await api("/api/research", { request: requestOf(store.get(id)) });
+    const { data } = await api("/api/research", { request: requestOf(store.get(id)), project_id: id });
     if (data.error || !data.job) throw new Error(data.error || "The server didn't start the research.");
     store.update(id, (p) => { p.research.job = data.job; }, "edit");
     poll(id, "research");
@@ -319,6 +417,7 @@ async function startResearch(id) {
 function finishResearch(id, dossier) {
   store.update(id, (p) => {
     Object.assign(p.research, { status: "done", finishedAt: Date.now(), dossier, job: null });
+    p.draftsLeft = (p.draftsLeft || 0) + 3; // each research run includes 3 drafts; the server has the final say
     p.review = buildReview(dossier, p.review);
   }, "research");
 }
@@ -326,14 +425,17 @@ function finishResearch(id, dossier) {
 async function startDraft(id, { instruction = null, label = "First draft" } = {}) {
   const p = store.get(id);
   const cur = currentVersion(p);
-  const body = { request: requestOf(p), dossier: dossierPayload(p) };
+  const body = { request: requestOf(p), dossier: dossierPayload(p), project_id: id };
   if (instruction && cur) body.revise = { subject: cur.subject, body: cur.body, instruction };
   const threads = instruction && cur ? cur.threads : p.review.hooks.filter((h) => h.selected).map((h) => ({ id: h.id, text: h.text }));
   store.update(id, (p) => { Object.assign(p.draft, { status: "running", error: null, job: null, pending: { label, threads, revise: !!body.revise } }); }, "draft");
   try {
     const { data } = await api("/api/draft", body);
     if (data.error || !data.job) throw new Error(data.error || "The server didn't start the draft.");
-    store.update(id, (p) => { p.draft.job = data.job; }, "edit");
+    store.update(id, (p) => {
+      p.draft.job = data.job;
+      if (typeof data.drafts_left === "number") p.draftsLeft = data.drafts_left;
+    }, "edit");
     poll(id, "draft");
   } catch (e) {
     failJob(id, "draft", e instanceof TypeError ? "Couldn't reach the Sociai server. Is it running?" : String(e.message || e));
@@ -398,6 +500,7 @@ function render({ instant = false } = {}) {
   if (instant || same || !from || !document.startViewTransition || reduced.matches) return swap();
   document.documentElement.dataset.dir = direction(from, route);
   const t = document.startViewTransition(swap);
+  t.ready.catch(() => {}); // a newer navigation can skip this one; that's fine
   t.finished.finally(() => {
     delete document.documentElement.dataset.dir;
     $$("[data-vt]").forEach((el) => { el.style.viewTransitionName = ""; el.removeAttribute("data-vt"); });
@@ -444,7 +547,7 @@ function renderBar(route, p) {
     <a class="brand" href="#/" aria-label="Sociai: your desk">${MARK}<span class="brand-word">Sociai</span></a>
     ${p ? `<div class="crumb"><span class="crumb-sep" aria-hidden="true">/</span><span class="crumb-who" id="crumb-who">${esc(nameOf(p))}</span><span class="crumb-goal" id="crumb-goal">${esc(p.brief.goal)}</span></div>
       <div id="nav-slot">${threadNav(p, route.stage)}</div>` : '<div class="crumb"></div>'}
-    <div class="bar-end">${p ? '<span class="saved" id="saved" title="Saved in this browser"><span>Saved</span></span>' : ""}${themeButton()}</div>
+    <div class="bar-end">${p ? '<span class="saved" id="saved" title="Saved in this browser"><span>Saved</span></span>' : ""}${accountButton()}${themeButton()}</div>
   </div>`;
 }
 
@@ -561,7 +664,7 @@ function closeDrawer() {
   drawerReturn?.focus?.();
   drawerReturn = null;
 }
-function closeMenus() { $$(".menu").forEach((m) => m.remove()); $$("[data-act='refine-menu']").forEach((b) => b.setAttribute("aria-expanded", "false")); }
+function closeMenus() { $$(".menu").forEach((m) => m.remove()); $$("[data-act='refine-menu'], [data-act='account']").forEach((b) => b.setAttribute("aria-expanded", "false")); }
 
 function citeHTML(source, src) {
   if (!source) return ` <span class="cite nolink" title="No source given">?</span>`;
@@ -630,7 +733,7 @@ function composerHTML(b, mode) {
   </div></div>
   ${isNew ? `<div class="row"><div class="margin"></div><div class="col composer-actions">
       ${primary("Begin research", "begin")}
-      <span class="muted" style="font-size:13.5px">Sociai reads public pages and cites them. It never sends anything for you.</span>
+      <span class="muted" id="credit-note" style="font-size:13.5px">${creditNote()}</span>
     </div></div>` : ""}`;
 }
 
@@ -794,6 +897,10 @@ function deskView(_, from) {
     brief, mode: "new",
     onChange: (b) => store.setPending(b),
     onSubmit: (b) => {
+      if (account.credits === 0) {
+        $("#credit-note").classList.add("is-warn");
+        return toast("You're out of credits, so a new research run can't start.");
+      }
       const clean = { ...b, samples: b.samples.filter((s) => s.trim()) };
       store.saveProfile({ background: clean.background, samples: clean.samples });
       const p = store.create(clean);
@@ -1348,15 +1455,18 @@ function draftView(p) {
     const vers = n ? `<div class="versions" role="group" aria-label="Draft versions"><span class="label" style="margin-right:4px">Drafts</span><ol>${q.draft.versions.map((x, i) =>
       `<li><button type="button" class="ver" data-act="version" data-i="${i}" aria-current="${i === q.draft.current}" title="v${i + 1}: ${esc(x.label)}" aria-label="Version ${i + 1}: ${esc(x.label)}">${i + 1}</button></li>`).join("")}</ol></div>` : "";
     const phs = v ? placeholders(v.body) : [];
+    const out = q.draftsLeft === 0;
     if (ui.confirmCopy && v) {
       $("#dock-context").innerHTML = `<span class="confirm-copy" role="alert">${plural(phs.length, "placeholder")} still in the message.</span>`;
       $("#dock-actions").innerHTML = `<button class="btn btn-ghost" data-act="show-ph">Show me</button><button class="btn btn-primary" data-act="copy" data-force="1" data-primary>Copy anyway</button>`;
       return;
     }
-    $("#dock-context").innerHTML = vers || `<span>${busy ? "Writing your first draft. This usually takes under a minute." : "No draft yet."}</span>`;
+    const left = typeof q.draftsLeft === "number"
+      ? `<span class="drafts-left">${plural(q.draftsLeft, "draft")} left with this research</span>` : "";
+    $("#dock-context").innerHTML = (vers + left) || `<span>${busy ? "Writing your first draft. This usually takes under a minute." : "No draft yet."}</span>`;
     $("#dock-actions").innerHTML = v ? `
-      <div class="refine-menu"><button class="btn btn-ghost" data-act="refine-menu" aria-haspopup="true" aria-expanded="false" ${busy ? "disabled" : ""}>${I.sparkle}<span>Refine<span class="label-long"> tone &amp; length</span></span></button></div>
-      <button class="btn btn-ghost" data-act="regenerate" ${busy ? "disabled" : ""} aria-label="Regenerate" title="Write a fresh draft from your research. This one stays in history.">${I.redo}<span class="label-long">Regenerate</span></button>
+      <div class="refine-menu"><button class="btn btn-ghost" data-act="refine-menu" aria-haspopup="true" aria-expanded="false" ${busy || out ? "disabled" : ""} ${out ? `title="${OUT_OF_DRAFTS}"` : ""}>${I.sparkle}<span>Refine<span class="label-long"> tone &amp; length</span></span></button></div>
+      <button class="btn btn-ghost" data-act="regenerate" ${busy || out ? "disabled" : ""} aria-label="Regenerate" title="${out ? OUT_OF_DRAFTS : "Write a fresh draft from your research. This one stays in history."}">${I.redo}<span class="label-long">Regenerate</span></button>
       <button class="btn btn-primary copy-btn" data-act="copy" data-primary><span class="idle">${I.copy} Copy message</span><span class="ok">${svg('<path d="m3 8.5 3 3 7-7"/>')} Copied</span></button>`
       : (q.draft.status === "error" ? `<a class="btn btn-ghost" href="${stageHash(q, "review")}">Back to review</a>` : "");
   };
@@ -1464,6 +1574,8 @@ function draftView(p) {
   return () => { off(); document.removeEventListener("keydown", onKey); removeEventListener("resize", onResize); document.body.classList.remove("focus-on"); };
 }
 
+const OUT_OF_DRAFTS = "No drafts left with this research. Re-running the research (1 credit) adds 3 more.";
+
 const VIEWS = { recipient: recipientView, research: researchView, review: reviewView, draft: draftView };
 
 /* ───────── Global interactions ───────── */
@@ -1480,6 +1592,9 @@ document.addEventListener("click", (e) => {
     return;
   }
   if (t.closest("[data-act='close-drawer']")) return closeDrawer();
+  const acct = t.closest("[data-act='account']");
+  if (acct) return toggleAccountMenu(acct);
+  if (t.closest("[data-act='sign-out']")) { signOut().finally(() => location.reload()); return; }
   const jump = t.closest("[data-act='jump-source']");
   if (jump) {
     closePop();
@@ -1489,7 +1604,7 @@ document.addEventListener("click", (e) => {
     return;
   }
   if (popAnchor && !t.closest("#pop") && !t.closest("[data-act='cite']")) closePop();
-  if ($(".menu") && !t.closest(".refine-menu")) closeMenus();
+  if ($(".menu") && !t.closest(".refine-menu, .account")) closeMenus();
 });
 
 document.addEventListener("keydown", (e) => {
@@ -1528,14 +1643,51 @@ addEventListener("resize", closePop);
 
 /* ───────── Boot ───────── */
 
+let sessionUser = null;
+
 // Jobs that were running when the page closed carry on (the server keeps them).
-for (const p of store.list()) {
-  for (const kind of ["research", "draft"]) {
-    const st = kind === "research" ? p.research : p.draft;
-    if (st.status !== "running") continue;
-    if (st.job) poll(p.id, kind);
-    else failJob(p.id, kind, "This was interrupted before it started. Try again.");
+function resumeJobs() {
+  for (const p of store.list()) {
+    for (const kind of ["research", "draft"]) {
+      const st = kind === "research" ? p.research : p.draft;
+      if (st.status !== "running") continue;
+      if (st.job) poll(p.id, kind);
+      else failJob(p.id, kind, "This was interrupted before it started. Try again.");
+    }
   }
 }
-render({ instant: true });
-api("/api/session").catch(() => {}); // opens the invite screen up front if this server needs a code
+
+function startSession(session) {
+  if (sessionUser) return;
+  sessionUser = session.user.id;
+  account.email = session.user.email || "";
+  useUser(session.user.id);
+  hideSignIn();
+  render({ instant: true });
+  resumeJobs();
+  refreshAccount();
+}
+
+async function boot() {
+  // A sign-in link that failed (expired or already used) comes back with the reason in the URL.
+  const linkError = new URLSearchParams(location.hash.slice(1)).get("error_description");
+  let auth;
+  try {
+    auth = await initAuth();
+  } catch {
+    return showFatal("Sociai couldn't load", "The sign-in service didn't load. Check your connection, then refresh the page.");
+  }
+  if (/(^#|&)(access_token|error)=/.test(location.hash)) history.replaceState(null, "", location.pathname + location.search);
+  if (!auth.configured) {
+    return showFatal("Sociai isn't set up yet", "This server needs SUPABASE_URL, SUPABASE_ANON_KEY and SUPABASE_SERVICE_ROLE_KEY. See .env.example.");
+  }
+  onAuthChange((event, session) => {
+    if (event === "SIGNED_OUT") return sessionUser && location.reload();
+    if (session && !sessionUser) return startSession(session); // e.g. the link was opened in another tab
+    if (session && session.user.id !== sessionUser) location.reload();
+  });
+  if (auth.session) startSession(auth.session);
+  else showSignIn({ message: linkError ? "That sign-in link has expired or was already used. Send yourself a new one." : "" });
+}
+
+boot();

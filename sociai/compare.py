@@ -16,6 +16,7 @@ import time
 from pathlib import Path
 
 from .cli import load_request
+from .config import load_env
 from .engine import Engine, RunUsage
 
 EXAMPLE = Path(__file__).resolve().parent.parent / "examples" / "student_professor.json"
@@ -84,6 +85,7 @@ def print_side_by_side(results):
 
 
 def main():
+    load_env()
     ap = argparse.ArgumentParser(description="Compare cost, time and drafts across models. Spends real API credits.")
     ap.add_argument("--example", default=str(EXAMPLE), help="JSON case file (default: examples/student_professor.json)")
     ap.add_argument("--models", nargs="+", default=["claude-opus-5-5", "claude-sonnet-5-5"])
