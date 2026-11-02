@@ -15,6 +15,11 @@ let client = null;
 // Where email links land. The "auth" query parameter tells the page which link it was.
 const returnTo = (kind) => `${location.origin}${location.pathname}?auth=${kind}`;
 
+// The landing page links to /app?mode=signup and /app?mode=login: the sign-in screen to open first.
+export function requestedScreen() {
+  return new URLSearchParams(location.search).get("mode") === "signup" ? "signup" : "signin";
+}
+
 export async function initAuth() {
   const res = await fetch("/api/config");
   const cfg = await res.json();

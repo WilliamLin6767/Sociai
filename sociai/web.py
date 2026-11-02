@@ -27,7 +27,9 @@ changes them only through the database functions defined there.
   POST /api/billing-portal -> {url} of the Stripe customer portal
   POST /api/stripe/webhook public; Stripe-signed events add credits (once per event)
   GET  /healthz            -> {"ok": true}
+  GET  /                  the public landing page; the app itself is at /app
   GET  /privacy, /terms    the Privacy Policy and Terms (static pages)
+  GET  /robots.txt, /sitemap.xml
 
 Profile and project calls run as the user (their own token), so the database's
 row-level security applies to them as well.
@@ -61,7 +63,8 @@ from .supabase import Supabase, SupabaseError
 
 STATIC = Path(__file__).parent / "static"
 # Windows can map these from the registry (e.g. .js -> text/plain), which breaks modules.
-for ext, kind in ((".js", "text/javascript"), (".css", "text/css"), (".svg", "image/svg+xml")):
+for ext, kind in ((".js", "text/javascript"), (".css", "text/css"), (".svg", "image/svg+xml"),
+                  (".txt", "text/plain"), (".xml", "application/xml")):
     mimetypes.add_type(kind, ext)
 JOB_TTL = 3600     # seconds a finished job is kept for a refreshed page to collect
 MAX_BODY = 200 * 1024
@@ -74,7 +77,11 @@ MAX_WEBHOOK_BODY = 1024 * 1024
 UUID = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
 TOKEN_TTL = 60     # seconds a verified access token is trusted before asking Supabase again
 PROJECT_ID = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
-PAGES = {"/": "index.html", "/index.html": "index.html", "/privacy": "privacy.html", "/terms": "terms.html"}
+PAGES = {"/": "landing.html", "/app": "app.html", "/privacy": "privacy.html", "/terms": "terms.html"}
+REDIRECTS = {"/app/": "/app", "/index.html": "/"}
+# Links that belong to the app but may still arrive at / : email links sent before the app moved
+# to /app (or sent to Supabase's Site URL) and Stripe Checkout sessions started before the move.
+APP_QUERY = ("auth", "code", "token_hash", "error_description", "checkout")
 
 # Set by setup(): main() loads .env first; tests pass their own settings and engine.
 settings: Settings = Settings()
@@ -242,6 +249,9 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(200, {"ok": True})
         if url.path.startswith("/api/"):
             return self._api(self._get_api, url)
+        if url.path in REDIRECTS or (url.path == "/" and any(k in parse_qs(url.query) for k in APP_QUERY)):
+            target = REDIRECTS.get(url.path, "/app")
+            return self._redirect(target + (f"?{url.query}" if url.query else ""))
         name = PAGES.get(url.path) or url.path.lstrip("/")
         path = (STATIC / name).resolve()
         if not path.is_file() or STATIC.resolve() not in path.parents:
@@ -613,6 +623,12 @@ class Handler(BaseHTTPRequestHandler):
 
     def _json(self, code, obj):
         self._send(code, json.dumps(obj).encode(), "application/json")
+
+    def _redirect(self, location):
+        self.send_response(302)
+        self.send_header("Location", location)
+        self.send_header("Content-Length", "0")
+        self.end_headers()
 
     def _send(self, code, body, ctype):
         self.send_response(code)
