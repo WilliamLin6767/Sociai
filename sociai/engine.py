@@ -30,6 +30,10 @@ WEB_TOOLS = [
 ]
 
 
+class Refused(RuntimeError):
+    """The model declined the request. The message is safe to show the user."""
+
+
 @dataclass
 class OutreachRequest:
     target: str                      # a name ("Prof. Jane Doe, MIT CSAIL") and/or a URL
@@ -202,7 +206,7 @@ class Engine:
                         on_block(event.content_block, started=False)
                 response = stream.get_final_message()
         if response.stop_reason == "refusal":
-            raise RuntimeError("The request was declined. Try rephrasing the goal.")
+            raise Refused("The request was declined. Try rephrasing the goal.")
         return response
 
     def research(self, req: OutreachRequest, on_progress=None) -> Dossier:

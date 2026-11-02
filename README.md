@@ -31,11 +31,49 @@ python -m sociai --target "Jane Doe, recruiter at Stripe" \
   --samples my_email_1.txt my_email_2.txt --channel linkedin --max-words 120
 ```
 
+On Windows PowerShell, set the key with `$env:ANTHROPIC_API_KEY="sk-ant-..."` instead of `export`.
+
+### Run locally with the invite gate on (Windows PowerShell)
+
+```powershell
+$env:ANTHROPIC_API_KEY="sk-ant-..."; $env:SOCIAI_ACCESS_CODES="test123"; python -m sociai.web
+```
+
+Open http://localhost:8000 and enter `test123` when asked for an invite code. To turn the gate off again in the same window, run `Remove-Item Env:SOCIAI_ACCESS_CODES`.
+
+## Deploy to Render
+
+The repo includes a `render.yaml` blueprint (a Python web service on Python 3.13.3, health-checked at `/healthz`).
+
+1. Push this repo to GitHub.
+2. In the Render dashboard choose **New > Blueprint**, pick the repo, and Render reads `render.yaml`.
+3. When Render asks, fill in the secrets:
+   - `ANTHROPIC_API_KEY`: your Claude API key (web search must be enabled for your org).
+   - `SOCIAI_ACCESS_CODES`: comma-separated invite codes, one per tester, e.g. `amy-7f3k,ben-q9x2`. Codes are per person, so limits apply per person.
+4. Deploy, then send each tester the URL and their code.
+
+Settings (environment variables):
+
+| Variable | Default | What it does |
+| --- | --- | --- |
+| `SOCIAI_ACCESS_CODES` | unset | Invite codes. When set, every API call needs a valid code, and server errors are logged instead of shown in the browser. When unset (local dev), there is no gate. |
+| `SOCIAI_DAILY_LIMIT` | 20 | Research + draft runs per code per UTC day. Each code can also run at most 2 at once. |
+| `SOCIAI_GLOBAL_DAILY_LIMIT` | 200 | Runs per UTC day across all testers, as a spending backstop. Applies even without the gate. |
+| `PORT` | unset | Set by Render. The server listens on `0.0.0.0:$PORT`; without it, `127.0.0.1:8000`. |
+
+Things to know:
+
+- Usage counts and running jobs live in memory. A restart or redeploy resets the daily counts and drops any research in progress (the page shows it as interrupted, with a retry).
+- Render's free plan sleeps after about 15 minutes without traffic, so the first visit after that takes a while to load. Change `plan` in `render.yaml` if that matters.
+- Projects are stored in each tester's browser, not on the server.
+- To revoke a tester, remove their code from `SOCIAI_ACCESS_CODES` and redeploy.
+
 ## Files
 
 - `sociai/engine.py`: the engine (`Engine.research`, `Engine.draft`, `Engine.run`). Use-case agnostic.
 - `sociai/cli.py`: command line.
-- `sociai/web.py`: web server, standard library only. Research and drafting run as background jobs (`/api/research`, `/api/draft`, polled at `/api/jobs/<id>`), so the page shows live progress and survives a refresh. The original `/research` and `/draft` endpoints still work.
+- `sociai/web.py`: web server, standard library only. Research and drafting run as background jobs (`/api/research`, `/api/draft`, polled at `/api/jobs/<id>`), so the page shows live progress and survives a refresh. The original `/research` and `/draft` endpoints still work. Also serves `/healthz`, the optional invite gate and the usage limits.
+- `render.yaml`: Render deploy blueprint.
 - `sociai/static/`: the web app (plain HTML, CSS and ES modules, no build step). Projects are saved in the browser's localStorage.
 - `examples/`: the student-to-professor demo, with two writing samples.
 
