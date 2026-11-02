@@ -5,6 +5,7 @@ import json
 import sys
 from pathlib import Path
 
+from .config import load_env
 from .engine import Engine, OutreachRequest
 
 
@@ -40,6 +41,7 @@ def print_progress(event: dict):
 
 
 def main():
+    load_env()
     ap = argparse.ArgumentParser(description="Research a person, then draft outreach in your voice.")
     ap.add_argument("--target", help="Name and context, or a URL (e.g. 'Prof. Jane Doe, Stanford NLP')")
     ap.add_argument("--goal", help="What you want from this message")

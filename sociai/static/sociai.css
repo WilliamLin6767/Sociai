@@ -649,7 +649,7 @@ body.focus-on .bar:hover, body.focus-on .bar:focus-within { opacity: 1; }
   @keyframes slideup { from { transform: translateY(32px); opacity: 0; } }
 }
 
-/* ───────── Invite gate ───────── */
+/* ───────── Sign-in screen ───────── */
 .gate { position: fixed; inset: 0; z-index: 60; background: var(--paper); display: grid; place-items: center; padding: var(--gutter); overflow-y: auto; animation: fade var(--d-3) var(--ease-out); }
 .gate-card { width: min(440px, 100%); display: grid; gap: var(--s3); }
 .gate-card .brand-mark { width: 34px; height: 34px; margin-bottom: var(--s3); }
@@ -657,6 +657,26 @@ body.focus-on .bar:hover, body.focus-on .bar:focus-within { opacity: 1; }
 .gate-card .who-input { margin-top: var(--s3); }
 .gate-card .field-error { margin: 0; }
 .gate-card .btn { justify-self: start; margin-top: var(--s3); }
+
+.gate-actions { display: flex; align-items: center; gap: var(--s4); flex-wrap: wrap; margin-top: var(--s3); }
+
+/* ───────── Account: credit balance + menu ───────── */
+.account { position: relative; }
+.credits-btn {
+  height: 32px; display: inline-flex; align-items: center; gap: 8px; padding: 0 12px; border: 1px solid var(--rule); border-radius: 999px;
+  font: 500 12.5px/1 var(--sans); color: var(--ink-2); font-variant-numeric: tabular-nums; transition: border-color var(--d-1), color var(--d-1);
+}
+.credits-btn:hover, .credits-btn[aria-expanded="true"] { border-color: var(--ink-3); color: var(--ink); }
+.credits-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--thread); }
+#credits-n { display: inline-block; }
+#credits-n.bump { animation: bump var(--d-3) var(--ease-out); }
+.menu.menu-down { bottom: auto; top: calc(100% + 8px); width: 280px; }
+.menu-head { margin: 0; padding: 8px 10px 4px; display: grid; gap: 4px; }
+.menu-email { font-size: 14px; color: var(--ink); word-break: break-all; }
+.menu-note { margin: 0; padding: 4px 10px 8px; font-size: 12.5px; color: var(--ink-3); line-height: 1.45; }
+#credit-note.is-warn { color: var(--ochre); }
+.drafts-left { font-size: 12.5px; color: var(--ink-3); margin-left: var(--s4); }
+@media (max-width: 600px) { .drafts-left { display: block; margin: 4px 0 0; } }
 
 /* ───────── Toasts ───────── */
 .toasts { position: fixed; left: 50%; bottom: 84px; transform: translateX(-50%); z-index: 45; display: grid; gap: var(--s2); width: max-content; max-width: calc(100vw - 32px); }

@@ -1,7 +1,8 @@
-// Projects live in this browser's localStorage. One record per outreach;
-// research, review and draft all hang off it, so stages never lose each other's state.
+// Projects live in this browser's localStorage, one store per signed-in user. One record
+// per outreach; research, review and draft all hang off it, so stages never lose each other's state.
 
-const KEY = "sociai.v1";
+const LEGACY_KEY = "sociai.v1"; // before accounts, one store per browser
+let KEY = LEGACY_KEY;
 
 const blank = () => ({ version: 1, projects: {}, profile: { background: "", samples: [] }, pending: null });
 
@@ -13,7 +14,7 @@ function read() {
   return blank();
 }
 
-let db = read();
+let db = blank();
 let timer = null;
 const savedListeners = new Set();
 const changeListeners = new Set();
@@ -46,6 +47,18 @@ addEventListener("storage", (e) => {
 
 const emit = (id, part) => changeListeners.forEach((fn) => fn(id, part));
 const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
+
+// Switch to a user's projects. Projects saved before accounts existed go to the first user
+// who signs in on this browser.
+export function useUser(id) {
+  KEY = `${LEGACY_KEY}.${id}`;
+  try {
+    const legacy = localStorage.getItem(LEGACY_KEY);
+    if (legacy && !localStorage.getItem(KEY)) localStorage.setItem(KEY, legacy);
+    if (legacy) localStorage.removeItem(LEGACY_KEY);
+  } catch {}
+  db = read();
+}
 
 export const store = {
   get profile() { return db.profile; },
