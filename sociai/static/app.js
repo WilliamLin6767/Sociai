@@ -177,7 +177,7 @@ function dossierPayload(p) {
     recent_work: kept.filter((i) => i.kind === "work").map((i) => ({ title: i.title, detail: i.text + (i.corrected ? " [corrected by sender]" : ""), source: i.source || "" })),
     hooks: r.hooks.filter((h) => h.selected).map((h) => h.text),
     cautions: r.cautions.map((c) => c.text),
-    sources: d.sources || [], notes: r.notes || "", reviewed: true,
+    sources: d.sources || [], notes: r.notes || "", reviewed: true, contact: d.contact || {},
   };
 }
 
@@ -198,6 +198,9 @@ function sourceIndex(p) {
   };
   (p.review?.items || []).forEach((i) => add(i.source));
   (p.research.dossier?.sources || []).forEach(add);
+  const c = p.research.dossier?.contact;
+  [...(c?.emails || []), ...(c?.phones || [])].forEach((x) => add(x.source));
+  add(c?.best_way_source);
   const titles = titleMap(p.research.events);
   const key = (u) => (isUrl(u) ? normUrl(u) : u);
   return {
@@ -914,6 +917,7 @@ function openDrawer(p) {
         <button class="icon-btn" data-act="close-drawer" aria-label="Close research">${I.x}</button></div>
       ${p.research.dossier.headline ? `<p class="overview-headline">${esc(p.research.dossier.headline)}</p>` : ""}
       <p class="read" style="font-size:16px;margin:8px 0 24px">${esc(p.review.summary.text)}</p>
+      ${p.research.dossier.contact ? `<p class="label" style="margin-bottom:8px">How to reach them</p>${reachHTML(p.research.dossier.contact, src)}<div style="height:24px"></div>` : ""}
       <p class="label" style="margin-bottom:8px">What the draft may use</p>
       <ol class="items">${items.map((i) => `<li class="item ${i.corrected ? "is-corrected" : ""}"><div><p class="item-text">${i.kind === "work" ? `<span class="item-title">${esc(i.title)}</span>: ` : ""}${esc(i.text)}${citeHTML(i.source, src)}</p>${i.corrected ? '<span class="prov you">Corrected by you</span>' : ""}</div></li>`).join("") || '<li class="muted">Nothing included.</li>'}</ol>
       <div style="margin-top:24px;display:flex;gap:8px"><a class="btn btn-line btn-sm" href="${stageHash(p, "review")}">Edit in review</a></div>
@@ -940,6 +944,24 @@ function citeHTML(source, src) {
   const n = src.num(source);
   const label = src.title(source) || (isUrl(source) ? domain(source) : source);
   return `<button type="button" class="cite${isUrl(source) ? "" : " nolink"}" data-act="cite" data-src="${esc(source)}" aria-expanded="false" aria-label="Source ${n}: ${esc(label)}">${n}</button>`;
+}
+
+// How to reach them: published emails and work phones, a likely email (marked as Sociai's
+// inference), and how they ask to be contacted. Every entry cites the page it came from.
+function reachHTML(contact, src) {
+  const c = { emails: [], phones: [], best_way: "", ...contact };
+  const copy = (v, what) => `<button type="button" class="icon-btn" data-act="copy-contact" data-v="${esc(v)}" aria-label="Copy ${what} ${esc(v)}" title="Copy ${what}">${I.copy}</button>`;
+  const rows = [
+    ...c.emails.map((e) => `<li class="reach-row"><span class="reach-k">Email</span>
+      <span class="reach-v"><a class="${e.kind === "likely" ? "inferred" : ""}" href="mailto:${esc(e.address)}">${esc(e.address)}</a>${citeHTML(e.source, src)}
+        ${e.kind === "likely" ? `<span class="prov">Likely, not published</span>${e.note ? `<span class="reach-note">${esc(e.note)}</span>` : ""}` : ""}</span>
+      ${copy(e.address, "email")}</li>`),
+    ...c.phones.map((ph) => `<li class="reach-row"><span class="reach-k">${ph.label ? esc(ph.label) : "Phone"}</span>
+      <span class="reach-v"><a href="tel:${esc(ph.number.replace(/[^\d+]/g, ""))}">${esc(ph.number)}</a>${citeHTML(ph.source, src)}</span>${copy(ph.number, "number")}</li>`),
+    c.best_way ? `<li class="reach-row"><span class="reach-k">Best way</span><span class="reach-v reach-best">${esc(c.best_way)}${c.best_way_source ? citeHTML(c.best_way_source, src) : ""}</span></li>` : "",
+  ].join("");
+  return `<ul class="reach">${rows}</ul>${c.emails.length || c.phones.length ? ""
+    : `<p class="reach-none">Sociai didn't find a published email or work phone on the pages it read. Their department or company directory is the next place to look.</p>`}`;
 }
 
 /* ───────── Composer (desk + Recipient stage) ───────── */
@@ -1557,6 +1579,7 @@ function reviewView(p) {
         <div id="summary">${summaryHTML(q0)}</div>
       </div>
     </section>
+    ${d.contact ? sec("reach", "How to reach them", "From their own and their institution's pages. Check before you send.", reachHTML(d.contact, src0)) : ""}
     ${q0.review.cautions.length ? sec("cautions", "Before you go on", "Things Sociai couldn't confirm. Read these first.",
       `<ul class="cautions" id="caution-list">${q0.review.cautions.map((c) => `<li class="caution${c.noted ? " is-noted" : ""}" data-id="${c.id}"><p>${esc(c.text)}</p>
         <button type="button" class="choice choice-sm" data-act="note" data-id="${c.id}" aria-pressed="${c.noted}">${c.noted ? "Noted" : "Mark as noted"}</button></li>`).join("")}</ul>`) : ""}
@@ -2411,9 +2434,11 @@ const TRACKER_ROLES = { professor: "professor", recruiter: "recruiter" }; // oth
 function trackDraft(q) {
   const v = currentVersion(q);
   const subject = ($("#subject")?.value ?? v?.subject ?? "").trim();
+  const email = q.research.dossier?.contact?.emails?.[0];
   openContactEditor(null, {
     prefill: {
       name: trunc(nameOf(q), 200), role: TRACKER_ROLES[q.brief.category] || "other",
+      email: email?.address || "", notes: email?.kind === "likely" ? "The email is Sociai's guess and isn't published anywhere. Check it before sending." : "",
       organization: trunc(q.research.dossier?.headline || "", 200), subject: trunc(subject, 300), status: "drafted",
     },
     onSaved: (c) => toast(`${c.name} was added to your tracker.`, { action: { label: "Open tracker", fn: () => go("#/tracker") } }),
@@ -2439,6 +2464,8 @@ document.addEventListener("click", (e) => {
     return;
   }
   if (t.closest("[data-act='close-drawer']")) return closeDrawer();
+  const cc = t.closest("[data-act='copy-contact']");
+  if (cc) { copyText(cc.dataset.v).then((ok) => toast(ok ? `Copied ${cc.dataset.v}` : "Couldn't reach the clipboard.")); return; }
   const acct = t.closest("[data-act='account']");
   if (acct) return toggleAccountMenu(acct);
   if (t.closest("[data-act='sign-out']")) { signOut().finally(() => location.reload()); return; }

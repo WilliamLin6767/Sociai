@@ -1053,3 +1053,16 @@ body.focus-on .bar:hover, body.focus-on .bar:focus-within { opacity: 1; }
   .tr-grid { grid-template-columns: minmax(0, 1fr); }
   .tr-dialog .input { font-size: 16px; } /* no zoom on focus in iOS */
 }
+
+/* ───────── How to reach them (Review and the research drawer) ───────── */
+.reach { list-style: none; margin: 0; padding: 0; border-top: 1px solid var(--rule-2); }
+.reach-row { display: grid; grid-template-columns: 88px minmax(0, 1fr) auto; align-items: center; gap: var(--s3); padding: 10px 0; border-bottom: 1px solid var(--rule-2); }
+.reach-k { font: 500 10.5px/1.3 var(--mono); letter-spacing: .08em; text-transform: uppercase; color: var(--ink-3); }
+.reach-v { min-width: 0; display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; font-size: 15px; color: var(--ink); overflow-wrap: anywhere; }
+.reach-v a { color: var(--ink); text-decoration-color: var(--rule); text-underline-offset: 3px; }
+.reach-v a.inferred { text-decoration: underline dotted var(--ink-3); text-decoration-thickness: 1.5px; }
+.reach-note { flex-basis: 100%; font-size: 12.5px; color: var(--ink-3); }
+.reach-best { display: block; font: 400 16px/1.5 var(--serif); color: var(--ink-2); }
+.reach-none { margin: var(--s3) 0 0; font: italic 400 16px/1.5 var(--serif); color: var(--ink-3); }
+.drawer .reach-row { grid-template-columns: 72px minmax(0, 1fr) auto; }
+@media (max-width: 600px) { .reach-row { grid-template-columns: minmax(0, 1fr) auto; } .reach-k { grid-column: 1 / -1; } }

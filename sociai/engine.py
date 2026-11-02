@@ -15,7 +15,9 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from dataclasses import dataclass, field
+from urllib.parse import urlparse
 
 import anthropic
 
@@ -161,6 +163,7 @@ class Dossier:
     recent_work: list[dict] = field(default_factory=list)  # [{"title", "detail", "source"}]
     notes: str = ""                  # anything the sender added during review
     reviewed: bool = False           # True once the sender has checked facts and picked hooks
+    contact: dict = field(default_factory=dict)  # see clean_contact(); empty for older research
 
     def as_text(self) -> str:
         who = ", ".join(x for x in (self.name, self.headline) if x)
@@ -185,7 +188,91 @@ class Dossier:
             lines += ["", "CAUTIONS:"] + [f"- {c}" for c in self.cautions]
         if self.notes:
             lines += ["", f"NOTES FROM THE SENDER: {self.notes}"]
+        best = (self.contact or {}).get("best_way")
+        if best:  # e.g. "put [Prospective student] in the subject"; the draft should follow it
+            lines += ["", f"HOW THEY ASK TO BE CONTACTED: {best}"]
         return "\n".join(lines)
+
+
+# ───────── Contact details ─────────
+#
+# Only professional contact details the person or their institution published. A "likely" email
+# is allowed only with a page showing the institution's address format. Entries without a source,
+# or sourced from people-search / data-broker sites, are dropped here whatever the model returned.
+
+PEOPLE_SEARCH = ("rocketreach", "zoominfo", "contactout", "apollo.io", "lusha", "signalhire", "hunter.io",
+                 "spokeo", "whitepages", "truepeoplesearch", "fastpeoplesearch", "beenverified", "peoplefinder",
+                 "radaris", "intelius", "411.com", "anywho", "clustrmaps", "nuwber", "mylife")
+EMAIL = re.compile(r"^[A-Za-z0-9._%+'-]+@[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}$")
+MAX_CONTACT = 3
+
+
+def _sourced(source) -> bool:
+    if not isinstance(source, str) or not source.startswith(("http://", "https://")):
+        return False
+    host = (urlparse(source).hostname or "").lower()
+    return bool(host) and not any(name in host for name in PEOPLE_SEARCH)
+
+
+def clean_contact(raw) -> dict:
+    """The contact block of a dossier, checked: {emails: [{address, kind, source, note}],
+    phones: [{number, label, source}], best_way, best_way_source}. kind is "published" or "likely"."""
+    raw = raw if isinstance(raw, dict) else {}
+    emails, seen = [], set()
+    for e in raw.get("emails") or []:
+        if not isinstance(e, dict):
+            continue
+        address = str(e.get("address") or "").strip().strip("<>").removeprefix("mailto:")
+        kind = e.get("kind") if e.get("kind") in ("published", "likely") else None
+        if not kind or not EMAIL.match(address) or address.lower() in seen or not _sourced(e.get("source")):
+            continue
+        seen.add(address.lower())
+        emails.append({"address": address, "kind": kind, "source": e["source"], "note": str(e.get("note") or "").strip()[:300]})
+    emails.sort(key=lambda e: e["kind"] != "published")  # published first
+    phones = []
+    for ph in raw.get("phones") or []:
+        if not isinstance(ph, dict):
+            continue
+        number = str(ph.get("number") or "").strip()
+        if not (7 <= sum(c.isdigit() for c in number) <= 15) or not re.fullmatch(r"[\d\s()+.\-x/ext]+", number) \
+                or not _sourced(ph.get("source")) or any(p["number"] == number for p in phones):
+            continue
+        phones.append({"number": number, "label": str(ph.get("label") or "").strip()[:80], "source": ph["source"]})
+    best, best_source = str(raw.get("best_way") or "").strip()[:600], raw.get("best_way_source") or ""
+    if best and not _sourced(best_source):
+        best_source = ""
+    return {"emails": emails[:MAX_CONTACT], "phones": phones[:MAX_CONTACT], "best_way": best, "best_way_source": best_source}
+
+
+HOMEPAGE = re.compile(r"^https?://([a-z0-9-]+(?:\.[a-z0-9-]+)*\.(?:edu|ac\.[a-z]{2}|edu\.[a-z]{2}))/~([a-z][a-z0-9._-]{1,30})/?", re.I)
+
+
+def likely_email(name: str, sources: list[str]) -> dict | None:
+    """A likely address from the person's own academic homepage when nothing was published:
+    cs.stanford.edu/~pliang -> pliang@cs.stanford.edu. Only if the username contains their
+    surname, so a student's or colleague's page linked from theirs doesn't count."""
+    words = re.findall(r"[a-z]+", name.lower())
+    surname = words[-1] if words else ""
+    if len(surname) < 3:
+        return None
+    for source in sources:
+        m = HOMEPAGE.match(source or "")
+        if m and surname in m[2].lower():
+            host, user = m[1].lower(), m[2].lower()
+            return {"address": f"{user}@{host}", "kind": "likely", "source": source,
+                    "note": f"From their homepage address ({host}/~{user}); not published, so check it before sending."}
+    return None
+
+
+def finish_contact(data: dict) -> dict:
+    """The research's contact block, cleaned, with a likely email from their homepage if none was found."""
+    contact = clean_contact(data.get("contact"))
+    if not contact["emails"]:
+        cited = [*data.get("sources", []), *(f.get("source", "") for f in data.get("facts", []) if isinstance(f, dict))]
+        guess = likely_email(data.get("name", ""), cited)
+        if guess:
+            contact["emails"] = [guess]
+    return contact
 
 
 @dataclass
@@ -228,8 +315,40 @@ DOSSIER_SCHEMA = {
         "hooks": {"type": "array", "items": {"type": "string"}},
         "cautions": {"type": "array", "items": {"type": "string"}},
         "sources": {"type": "array", "items": {"type": "string"}},
+        "contact": {
+            "type": "object",
+            "properties": {
+                "emails": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "address": {"type": "string"},
+                            "kind": {"type": "string", "enum": ["published", "likely"]},
+                            "source": {"type": "string"},
+                            "note": {"type": "string"},
+                        },
+                        "required": ["address", "kind", "source", "note"],
+                        "additionalProperties": False,
+                    },
+                },
+                "phones": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {"number": {"type": "string"}, "label": {"type": "string"}, "source": {"type": "string"}},
+                        "required": ["number", "label", "source"],
+                        "additionalProperties": False,
+                    },
+                },
+                "best_way": {"type": "string"},
+                "best_way_source": {"type": "string"},
+            },
+            "required": ["emails", "phones", "best_way", "best_way_source"],
+            "additionalProperties": False,
+        },
     },
-    "required": ["name", "headline", "summary", "facts", "recent_work", "hooks", "cautions", "sources"],
+    "required": ["name", "headline", "summary", "facts", "recent_work", "hooks", "cautions", "sources", "contact"],
     "additionalProperties": False,
 }
 
@@ -272,7 +391,26 @@ Rules:
 - Hooks are concrete angles the sender could genuinely connect on (a specific
   paper, project, post, decision), not flattery.
 - Don't collect private or sensitive personal information (home address,
-  family, health, etc.). Professional/public work only."""
+  family, health, etc.). Professional/public work only.
+
+Contact (how the sender can reach them), from pages you actually fetched:
+- emails: addresses published on their own page, their institution's or employer's
+  directory or profile, or a paper's corresponding-author line. kind "published",
+  source = that page. Undo obfuscation like "name [at] uni [dot] edu".
+- Only if no address is published: one "likely" address, only with evidence you saw:
+  a page on the same institution's site showing its format (e.g. colleagues listed as
+  first.last@uni.edu), or their personal page's username on the institution's domain
+  (cs.uni.edu/~jdoe suggests jdoe@cs.uni.edu). source = that page; note names the
+  evidence in a few words and says it isn't confirmed. Otherwise leave emails empty.
+- phones: only an office or work number on an official directory or profile page,
+  with its label (e.g. "Office"). Never a personal or mobile number.
+- best_way: one or two sentences on the channel only: how they ask to be contacted,
+  or the best route given what you saw (e.g. "Prospective students should apply
+  through the department rather than emailing", "Put [PhD applicant] in the subject",
+  "Office hours Tue 2-4pm in Gates 392", "Most active on LinkedIn"), with
+  best_way_source. No advice on what to write. Leave it empty if nothing suggests one.
+- Never use people-search or contact-data sites (RocketReach, ZoomInfo, ContactOut,
+  Spokeo, Whitepages, etc.) for any of this."""
 
 DRAFT_SYSTEM = """You write outreach messages that the sender will review and send
 themselves. The message must sound like the sender wrote it, not like an AI.
@@ -362,7 +500,9 @@ class Engine:
                     used[block.name] += 1
             messages.append({"role": "assistant", "content": response.content})
         text = next(b.text for b in response.content if b.type == "text")
-        return Dossier(**json.loads(text))
+        data = json.loads(text)
+        data["contact"] = finish_contact(data)
+        return Dossier(**data)
 
     def draft(self, req: OutreachRequest, dossier: Dossier, revise: dict | None = None,
               usage: RunUsage | None = None) -> Draft:
