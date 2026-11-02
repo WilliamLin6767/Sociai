@@ -18,7 +18,7 @@ from dataclasses import dataclass, field
 
 import anthropic
 
-MODEL = "claude-opus-5-5"
+MODEL = "claude-sonnet-5-5"
 
 # Server-side refusal fallback: if a request is declined by a safety classifier,
 # the API re-runs it on Anthropic's recommended fallback model in the same call.
