@@ -19,7 +19,10 @@ Deployment settings (environment variables):
                              apply, and API errors are logged instead of shown
   SOCIAI_DAILY_LIMIT         research + draft jobs per code per UTC day (default 20)
   SOCIAI_GLOBAL_DAILY_LIMIT  jobs per UTC day across everyone (default 200)
-Usage is counted in memory, so it resets when the server restarts.
+  SOCIAI_RESEARCH_MODEL / SOCIAI_DRAFT_MODEL   model per step (default claude-sonnet-5-5)
+Usage is counted in memory, so it resets when the server restarts. Each finished
+research or draft job logs one line with its tokens, web calls and estimated cost,
+and carries the same numbers in result["usage"].
 """
 
 import hmac
@@ -38,7 +41,7 @@ from urllib.parse import parse_qs, urlparse
 
 import anthropic
 
-from .engine import Dossier, Engine, OutreachRequest, Refused
+from .engine import Dossier, Engine, OutreachRequest, Refused, RunUsage
 
 engine = Engine()
 
@@ -135,18 +138,29 @@ class EditedDossier(Dossier):
         return self._text
 
 
+def log_run(kind, usage: RunUsage, seconds, status):
+    """One line per research or draft run, so spend shows up in the server log."""
+    u = usage.summary()
+    models = "+".join(u["models"]) or "-"
+    print(f"[run] {kind} {status} {seconds:.1f}s model={models}{' (fallback)' if u['fell_back'] else ''} "
+          f"in={u['input_tokens']} out={u['output_tokens']} cache_read={u['cache_read_tokens']} "
+          f"searches={u['web_searches']} fetches={u['web_fetches']} cost=${u['cost_usd']:.4f}"
+          + (f" unpriced={','.join(u['unpriced_models'])}" if u["unpriced_models"] else ""), flush=True)
+
+
 class Job:
-    def __init__(self, work, code=None):
+    def __init__(self, work, kind, code=None):
         self.events, self.result, self.error = [], None, None
         self.status = "running"
-        self.code = code
+        self.kind, self.code = kind, code
+        self.usage = RunUsage()
         self.created = time.time()
         self.lock = threading.Lock()
         threading.Thread(target=self._run, args=(work,), daemon=True).start()
 
     def _run(self, work):
         try:
-            result = work(self.emit)
+            result = {**work(self.emit, self.usage), "usage": self.usage.summary()}
             with self.lock:
                 self.result, self.status = result, "done"
         except Exception as e:
@@ -155,6 +169,7 @@ class Job:
                 self.error, self.status = message, "error"
         finally:
             quota.release(self.code)
+            log_run(self.kind, self.usage, time.time() - self.created, self.status)
 
     def emit(self, event):
         with self.lock:
@@ -169,19 +184,19 @@ class Job:
 jobs: dict[str, Job] = {}
 
 
-def start_job(work, code) -> str:
+def start_job(work, kind, code) -> str:
     now = time.time()
     for key in [k for k, j in jobs.items() if now - j.created > JOB_TTL]:
         del jobs[key]
     key = uuid.uuid4().hex
-    jobs[key] = Job(work, code)
+    jobs[key] = Job(work, kind, code)
     return key
 
 
 # These build the request objects up front, so a malformed body fails before any quota is spent.
 def research_work(data):
     req = OutreachRequest(**data["request"])
-    return lambda emit: engine.research(req, on_progress=emit).__dict__
+    return lambda emit, usage: engine.research(req, on_progress=emit, usage=usage).__dict__
 
 
 def draft_work(data):
@@ -190,15 +205,15 @@ def draft_work(data):
     revise = data.get("revise")
     if revise is not None and not (isinstance(revise, dict) and {"body", "instruction"} <= revise.keys()):
         raise ValueError("revise needs body and instruction")
-    return lambda emit: engine.draft(req, dossier, revise=revise).__dict__
+    return lambda emit, usage: engine.draft(req, dossier, revise=revise, usage=usage).__dict__
 
 
 def legacy_research_work(data):
     req = OutreachRequest(**data)
 
-    def work():
-        dossier = engine.research(req)
-        return {"dossier": dossier.__dict__, "text": dossier.as_text()}
+    def work(usage):
+        dossier = engine.research(req, usage=usage)
+        return {"dossier": dossier.__dict__, "text": dossier.as_text(), "usage": usage.summary()}
     return work
 
 
@@ -206,13 +221,13 @@ def legacy_draft_work(data):
     req = OutreachRequest(**data["request"])
     original = Dossier(**data["dossier"])
     dossier = original if data["edited"] == original.as_text() else EditedDossier(data["edited"])
-    return lambda: engine.draft(req, dossier).__dict__
+    return lambda usage: {**engine.draft(req, dossier, usage=usage).__dict__, "usage": usage.summary()}
 
 
-POST_ROUTES = {
-    "/api/research": research_work, "/api/draft": draft_work,
+POST_ROUTES = {  # path -> (request builder, kind for the usage log)
+    "/api/research": (research_work, "research"), "/api/draft": (draft_work, "draft"),
     # The original synchronous endpoints, kept for scripts that call them.
-    "/research": legacy_research_work, "/draft": legacy_draft_work,
+    "/research": (legacy_research_work, "research"), "/draft": (legacy_draft_work, "draft"),
 }
 
 
@@ -255,24 +270,28 @@ class Handler(BaseHTTPRequestHandler):
         route = POST_ROUTES.get(path)
         if not route:
             return self._json(404, {"error": "Not found."})
+        build, kind = route
         try:
             code = self._check_code()
             data = self._read_json()
             try:
-                work = route(data)
+                work = build(data)
             except (KeyError, TypeError, ValueError, AttributeError):
                 raise Reject(400, "The request is missing fields or has the wrong shape.")
             quota.acquire(code)
         except Reject as r:
             return self._json(r.code, {"error": str(r)})
         if path.startswith("/api/"):
-            return self._json(200, {"job": start_job(work, code)})
+            return self._json(200, {"job": start_job(work, kind, code)})
+        usage, started, status = RunUsage(), time.time(), "error"
         try:
-            out = work()
+            out = work(usage)
+            status = "done"
         except Exception as e:
             out = {"error": public_error(e)}
         finally:
             quota.release(code)
+            log_run(kind, usage, time.time() - started, status)
         self._json(200, out)
 
     def _check_code(self):

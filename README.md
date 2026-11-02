@@ -10,7 +10,39 @@ It is one general engine. Every use case (student to professor, job seeker to re
 2. **Review.** You check each cited fact, correct or exclude it, and pick the "threads" (hooks) the message should be built around.
 3. **Draft.** Claude writes the message using one or two real details, matched to your writing samples (tone, length, greetings, sign-off). Anything it doesn't know becomes a `[PLACEHOLDER]` listed under "check before sending". It never sends anything.
 
-Uses `claude-opus-5-5` with server-side web search and web fetch, plus structured JSON output for both steps.
+Uses `claude-sonnet-5-5` by default (configurable per step, see below) with server-side web search and web fetch, plus structured JSON output for both steps. If a safety classifier declines a request, the server-side refusal fallback re-runs it on another model in the same call.
+
+## Models and cost
+
+| Variable | Default | What it does |
+| --- | --- | --- |
+| `SOCIAI_RESEARCH_MODEL` | `claude-sonnet-5-5` | Model for the research step (web search + fetch). |
+| `SOCIAI_DRAFT_MODEL` | `claude-sonnet-5-5` | Model for writing and refining drafts. |
+
+For example, to research with Opus and draft with Sonnet (PowerShell):
+
+```powershell
+$env:SOCIAI_RESEARCH_MODEL="claude-opus-5-5"; $env:SOCIAI_DRAFT_MODEL="claude-sonnet-5-5"; python -m sociai.web
+```
+
+Every research and draft run records input, output and cache-read tokens, web searches and fetches, and the model that actually served it (which differs from the one you asked for if the refusal fallback stepped in). The web server prints one line per run and adds the same numbers to the job result as `usage`:
+
+```
+[run] research done 48.2s model=claude-sonnet-5-5 in=38120 out=3104 cache_read=0 searches=5 fetches=8 cost=$0.1573
+```
+
+Costs are estimates from the price table in `sociai/engine.py`: Opus 5.5 $4 / $20, Sonnet 5.5 $2 / $10, Haiku 5.5 $0.10 / $0.50 per million input / output tokens, and about $10 per 1,000 web searches. A model missing from the table shows up as `unpriced` instead of being guessed. Check the Claude Console for actual billing.
+
+To compare models on the student-to-professor example (this spends real API credits, roughly one research and one draft per model):
+
+```powershell
+$env:ANTHROPIC_API_KEY="sk-ant-..."
+python -m sociai.compare                      # claude-opus-5-5 vs claude-sonnet-5-5
+python -m sociai.compare --save compare.json  # also keep the full results
+python -m sociai.compare --models claude-sonnet-5-5 claude-haiku-5-5
+```
+
+It prints cost, time and token counts per model and step, then the two drafts side by side. Haiku is supported (with basic web tools and no refusal fallback), but untested.
 
 ## Run it
 
@@ -59,6 +91,7 @@ Settings (environment variables):
 | `SOCIAI_ACCESS_CODES` | unset | Invite codes. When set, every API call needs a valid code, and server errors are logged instead of shown in the browser. When unset (local dev), there is no gate. |
 | `SOCIAI_DAILY_LIMIT` | 20 | Research + draft runs per code per UTC day. Each code can also run at most 2 at once. |
 | `SOCIAI_GLOBAL_DAILY_LIMIT` | 200 | Runs per UTC day across all testers, as a spending backstop. Applies even without the gate. |
+| `SOCIAI_RESEARCH_MODEL`, `SOCIAI_DRAFT_MODEL` | `claude-sonnet-5-5` | Model per step. See "Models and cost" above. |
 | `PORT` | unset | Set by Render. The server listens on `0.0.0.0:$PORT`; without it, `127.0.0.1:8000`. |
 
 Things to know:
@@ -72,6 +105,7 @@ Things to know:
 
 - `sociai/engine.py`: the engine (`Engine.research`, `Engine.draft`, `Engine.run`). Use-case agnostic.
 - `sociai/cli.py`: command line.
+- `sociai/compare.py`: runs one case on several models and compares cost, time and drafts.
 - `sociai/web.py`: web server, standard library only. Research and drafting run as background jobs (`/api/research`, `/api/draft`, polled at `/api/jobs/<id>`), so the page shows live progress and survives a refresh. The original `/research` and `/draft` endpoints still work. Also serves `/healthz`, the optional invite gate and the usage limits.
 - `render.yaml`: Render deploy blueprint.
 - `sociai/static/`: the web app (plain HTML, CSS and ES modules, no build step). Projects are saved in the browser's localStorage.
