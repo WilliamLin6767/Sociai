@@ -43,17 +43,39 @@ class OutreachRequest:
 @dataclass
 class Dossier:
     summary: str                     # who this person is, in a paragraph
-    facts: list[dict]                # [{"fact": ..., "source": url}]
+    facts: list[dict]                # [{"fact": ..., "source": url, "corrected": bool?}]
     hooks: list[str]                 # specific, genuine angles to connect on
     cautions: list[str]              # things to avoid / uncertainty (e.g. same-name confusion)
     sources: list[str]
+    name: str = ""                   # their name as written on a primary source
+    headline: str = ""               # current role and affiliation, in a few words
+    recent_work: list[dict] = field(default_factory=list)  # [{"title", "detail", "source"}]
+    notes: str = ""                  # anything the sender added during review
+    reviewed: bool = False           # True once the sender has checked facts and picked hooks
 
     def as_text(self) -> str:
-        lines = [f"SUMMARY: {self.summary}", "", "FACTS:"]
-        lines += [f"- {f['fact']} [{f.get('source', '')}]" for f in self.facts]
-        lines += ["", "POSSIBLE HOOKS:"] + [f"- {h}" for h in self.hooks]
+        who = ", ".join(x for x in (self.name, self.headline) if x)
+        lines = [f"WHO: {who}"] if who else []
+        lines += [f"SUMMARY: {self.summary}", ""]
+        if self.reviewed:
+            lines.append("FACTS (checked by the sender; trust [corrected by sender] over any source):")
+        else:
+            lines.append("FACTS:")
+        for f in self.facts:
+            mark = " [corrected by sender]" if f.get("corrected") else ""
+            lines.append(f"- {f['fact']} [{f.get('source', '')}]{mark}")
+        if self.recent_work:
+            lines += ["", "RECENT WORK:"]
+            lines += [f"- {w['title']}: {w.get('detail', '')} [{w.get('source', '')}]" for w in self.recent_work]
+        if self.reviewed:
+            lines += ["", "HOOKS THE SENDER CHOSE (build the message around these):"]
+        else:
+            lines += ["", "POSSIBLE HOOKS:"]
+        lines += [f"- {h}" for h in self.hooks]
         if self.cautions:
             lines += ["", "CAUTIONS:"] + [f"- {c}" for c in self.cautions]
+        if self.notes:
+            lines += ["", f"NOTES FROM THE SENDER: {self.notes}"]
         return "\n".join(lines)
 
 
@@ -69,6 +91,8 @@ class Draft:
 DOSSIER_SCHEMA = {
     "type": "object",
     "properties": {
+        "name": {"type": "string"},
+        "headline": {"type": "string"},
         "summary": {"type": "string"},
         "facts": {
             "type": "array",
@@ -79,11 +103,24 @@ DOSSIER_SCHEMA = {
                 "additionalProperties": False,
             },
         },
+        "recent_work": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "title": {"type": "string"},
+                    "detail": {"type": "string"},
+                    "source": {"type": "string"},
+                },
+                "required": ["title", "detail", "source"],
+                "additionalProperties": False,
+            },
+        },
         "hooks": {"type": "array", "items": {"type": "string"}},
         "cautions": {"type": "array", "items": {"type": "string"}},
         "sources": {"type": "array", "items": {"type": "string"}},
     },
-    "required": ["summary", "facts", "hooks", "cautions", "sources"],
+    "required": ["name", "headline", "summary", "facts", "recent_work", "hooks", "cautions", "sources"],
     "additionalProperties": False,
 }
 
@@ -116,6 +153,11 @@ How to spend your tools (search is for finding pages, fetch is for reading them)
 
 Rules:
 - Every fact must come from a page you actually saw; cite its URL.
+- name is the person's name as written on their own page.
+- headline is their current role and affiliation in a few words, as stated on
+  a primary source (e.g. "Associate Professor of CS, Stanford").
+- recent_work lists 0-4 specific recent papers, projects, posts or talks
+  (title, one line on what it is, URL). Leave it empty rather than guess.
 - If several people share the name, say so in cautions and pick the one that
   best matches the given context, explaining why.
 - Hooks are concrete angles the sender could genuinely connect on (a specific
@@ -135,7 +177,10 @@ Rules:
   put a [BRACKETED PLACEHOLDER] and list it in open_questions.
 - Lead with why this person specifically, make the ask clear and easy to say
   yes to, and respect their time. No buzzwords, no excessive praise.
-- Stay within the word limit. For channels without subjects, leave subject empty."""
+- Stay within the word limit. For channels without subjects, leave subject empty.
+- When asked to revise an existing draft, treat it as the sender's text: they
+  may have edited it by hand. Change only what the revision request needs and
+  keep their wording everywhere else."""
 
 
 class Engine:
@@ -143,18 +188,27 @@ class Engine:
         self.client = client or anthropic.Anthropic()
         self.model = model
 
-    def _create(self, **kwargs):
-        response = self.client.beta.messages.create(
-            model=self.model,
-            betas=[FALLBACK_BETA],
-            fallbacks="default",
-            **kwargs,
-        )
+    def _create(self, on_block=None, **kwargs):
+        """One API call. With on_block, stream it and report each content block as it completes."""
+        params = dict(model=self.model, betas=[FALLBACK_BETA], fallbacks="default", **kwargs)
+        if on_block is None:
+            response = self.client.beta.messages.create(**params)
+        else:
+            with self.client.beta.messages.stream(**params) as stream:
+                for event in stream:
+                    if event.type == "content_block_start" and event.content_block.type == "text":
+                        on_block(event.content_block, started=True)
+                    elif event.type == "content_block_stop":
+                        on_block(event.content_block, started=False)
+                response = stream.get_final_message()
         if response.stop_reason == "refusal":
             raise RuntimeError("The request was declined. Try rephrasing the goal.")
         return response
 
     def research(self, req: OutreachRequest, on_progress=None) -> Dossier:
+        """on_progress, if given, receives live events as dicts with a "kind" key:
+        search {query}, found {results: [{url, title}]}, fetch {url},
+        read {url, title}, read_failed {url}, composing {}."""
         prompt = (
             f"Person to research: {req.target}\n"
             f"Sender's goal: {req.goal}\n"
@@ -162,26 +216,25 @@ class Engine:
             "Research this person, then give the dossier."
         )
         messages = [{"role": "user", "content": prompt}]
+        on_block = _progress_reporter(on_progress) if on_progress else None
         # Server tools can pause a long turn; send it back so the server continues.
         for _ in range(6):
             response = self._create(
+                on_block=on_block,
                 max_tokens=16000,
                 system=RESEARCH_SYSTEM,
                 tools=WEB_TOOLS,
                 output_config={"effort": "medium", "format": {"type": "json_schema", "schema": DOSSIER_SCHEMA}},
                 messages=messages,
             )
-            if on_progress:
-                for block in response.content:
-                    if block.type == "server_tool_use":
-                        on_progress(f"{block.name}: {json.dumps(block.input)}")
             if response.stop_reason != "pause_turn":
                 break
             messages.append({"role": "assistant", "content": response.content})
         text = next(b.text for b in response.content if b.type == "text")
         return Dossier(**json.loads(text))
 
-    def draft(self, req: OutreachRequest, dossier: Dossier) -> Draft:
+    def draft(self, req: OutreachRequest, dossier: Dossier, revise: dict | None = None) -> Draft:
+        """revise, if given, is {"subject", "body", "instruction"}: rework that draft instead of starting over."""
         samples = "\n\n---\n\n".join(req.writing_samples) or "(none given)"
         prompt = (
             f"Channel: {req.channel}\nWord limit: {req.max_words}\n\n"
@@ -189,8 +242,16 @@ class Engine:
             f"Sender's background: {req.sender_background or '(not given)'}\n\n"
             f"Sender's writing samples:\n{samples}\n\n"
             f"Research on the recipient:\n{dossier.as_text()}\n\n"
-            "Write the draft."
         )
+        if revise:
+            prompt += (
+                "Current draft (the sender may have edited it by hand):\n"
+                f"Subject: {revise.get('subject', '')}\n\n{revise['body']}\n\n"
+                f"Revision request: {revise['instruction']}\n\n"
+                "Write the revised draft."
+            )
+        else:
+            prompt += "Write the draft."
         response = self._create(
             max_tokens=8000,
             system=DRAFT_SYSTEM,
@@ -203,3 +264,29 @@ class Engine:
     def run(self, req: OutreachRequest, on_progress=None) -> tuple[Dossier, Draft]:
         dossier = self.research(req, on_progress)
         return dossier, self.draft(req, dossier)
+
+
+def _progress_reporter(on_progress):
+    """Turn streamed content blocks into the progress events research() documents."""
+    fetch_urls = {}  # tool_use_id -> url, so a failed fetch can say which page
+
+    def on_block(block, started):
+        if started:
+            on_progress({"kind": "composing"})
+        elif block.type == "server_tool_use" and block.name == "web_search":
+            on_progress({"kind": "search", "query": block.input.get("query", "")})
+        elif block.type == "server_tool_use" and block.name == "web_fetch":
+            fetch_urls[block.id] = block.input.get("url", "")
+            on_progress({"kind": "fetch", "url": fetch_urls[block.id]})
+        elif block.type == "web_search_tool_result" and isinstance(block.content, list):
+            results = [{"url": r.url, "title": r.title} for r in block.content]
+            on_progress({"kind": "found", "results": results})
+        elif block.type == "web_fetch_tool_result":
+            content = block.content
+            if content.type == "web_fetch_result":
+                title = getattr(content.content, "title", None) or ""
+                on_progress({"kind": "read", "url": content.url, "title": title})
+            else:
+                on_progress({"kind": "read_failed", "url": fetch_urls.get(block.tool_use_id, "")})
+
+    return on_block

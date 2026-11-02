@@ -27,6 +27,18 @@ def load_request(args) -> OutreachRequest:
     )
 
 
+def print_progress(event: dict):
+    line = {
+        "search": lambda e: f"searched: {e['query']}",
+        "found": lambda e: f"found {len(e['results'])} pages",
+        "fetch": lambda e: f"reading: {e['url']}",
+        "read_failed": lambda e: f"couldn't read: {e['url']}",
+        "composing": lambda e: "writing the dossier",
+    }.get(event["kind"])
+    if line:
+        print(f"  · {line(event)}", file=sys.stderr)
+
+
 def main():
     ap = argparse.ArgumentParser(description="Research a person, then draft outreach in your voice.")
     ap.add_argument("--target", help="Name and context, or a URL (e.g. 'Prof. Jane Doe, Stanford NLP')")
@@ -42,7 +54,7 @@ def main():
     req = load_request(args)
     engine = Engine()
     print(f"Researching {req.target} ...", file=sys.stderr)
-    dossier = engine.research(req, on_progress=lambda s: print(f"  · {s}", file=sys.stderr))
+    dossier = engine.research(req, on_progress=print_progress)
     print("Drafting ...", file=sys.stderr)
     draft = engine.draft(req, dossier)
 

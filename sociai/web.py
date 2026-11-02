@@ -1,76 +1,34 @@
-"""Tiny web UI (stdlib only): python -m sociai.web  ->  http://localhost:8000
+"""Web UI (stdlib only): python -m sociai.web  ->  http://localhost:8000
 
-Flow: fill the form -> Research -> review/edit the research -> Draft -> edit and copy.
+The page lives in sociai/static/. Research and drafting run as background jobs so
+the browser can show live progress and pick a job back up after a refresh:
+
+  POST /api/research  {request}                      -> {"job": id}
+  POST /api/draft     {request, dossier, revise?}    -> {"job": id}
+  GET  /api/jobs/<id>?after=N  -> {"status", "events" (from index N), "result", "error"}
+
+Projects are saved in the browser (localStorage); nothing is ever sent anywhere
+except to the Claude API, and messages are never sent on the user's behalf.
 """
 
 import json
+import mimetypes
+import threading
+import time
+import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+from urllib.parse import parse_qs, urlparse
 
 from .engine import Dossier, Engine, OutreachRequest
 
 engine = Engine()
 
-PAGE = r"""<!doctype html><html><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1"><title>Sociai</title>
-<style>
-body{font:15px/1.5 system-ui,sans-serif;max-width:820px;margin:24px auto;padding:0 16px;color:#1d1d1f;background:#fafafa}
-h1{margin:0 0 4px}.sub{color:#666;margin:0 0 20px}
-label{display:block;font-weight:600;margin:14px 0 4px}
-input,textarea,select{width:100%;box-sizing:border-box;padding:8px;border:1px solid #ccc;border-radius:6px;font:inherit;background:#fff}
-textarea{min-height:80px}.row{display:flex;gap:12px}.row>div{flex:1}
-button{margin-top:16px;padding:10px 18px;border:0;border-radius:6px;background:#2f5bea;color:#fff;font:inherit;cursor:pointer}
-button:disabled{opacity:.5}.card{background:#fff;border:1px solid #e3e3e3;border-radius:8px;padding:16px;margin-top:20px}
-.hidden{display:none}.muted{color:#666;font-size:13px}ul{padding-left:20px}
-</style></head><body>
-<h1>Sociai</h1><p class="sub">Researches who you're reaching out to, then drafts a message in your voice.</p>
-<label>Use case</label>
-<select id="preset"><option value="">Custom</option></select>
-<label>Who are you reaching out to? (name + context, or a link)</label>
-<input id="target" placeholder="e.g. Prof. Jane Doe, Stanford NLP group">
-<label>What do you want?</label>
-<textarea id="goal"></textarea>
-<label>About you (optional)</label>
-<textarea id="background"></textarea>
-<label>Samples of your own writing (optional, paste 1-3 emails or posts)</label>
-<textarea id="samples" placeholder="Separate samples with a line containing ---"></textarea>
-<div class="row"><div><label>Channel</label><input id="channel" value="email"></div>
-<div><label>Max words</label><input id="max_words" type="number" value="180"></div></div>
-<button id="go">1. Research</button>
-
-<div id="r" class="card hidden"><h3>Research <span class="muted">(edit anything that's wrong before drafting)</span></h3>
-<textarea id="dossier" style="min-height:260px;font-family:ui-monospace,monospace;font-size:13px"></textarea>
-<button id="draftBtn">2. Draft message</button></div>
-
-<div id="d" class="card hidden"><h3>Draft</h3>
-<input id="subject"><textarea id="body" style="min-height:220px;margin-top:8px"></textarea>
-<div id="notes" class="muted"></div></div>
-
-<script>
-const PRESETS={
- "Student → professor (research)":["Ask to join their lab as an undergraduate research assistant next semester, or for a short call about open projects.","CS junior, took ML and NLP courses, built a small project fine-tuning a sentiment model."],
- "Job seeker → recruiter":["Get a referral or a first conversation about a role on their team.",""],
- "Founder → investor":["Get a 20-minute intro call about our pre-seed round.",""],
- "Sales → prospect":["Book a short demo of our product for their team.",""],
- "Networking / advice":["Ask for 15 minutes of advice about their career path.",""],
- "Journalist / podcast guest":["Invite them to be interviewed.",""]};
-const sel=document.getElementById('preset');
-for(const k in PRESETS){const o=document.createElement('option');o.textContent=k;sel.appendChild(o)}
-sel.onchange=()=>{const p=PRESETS[sel.value];if(p){goal.value=p[0];background.value=p[1]}};
-const $=id=>document.getElementById(id);
-function req(){return{target:$('target').value,goal:$('goal').value,sender_background:$('background').value,
- writing_samples:$('samples').value.split(/\n---\n/).map(s=>s.trim()).filter(Boolean),
- channel:$('channel').value,max_words:+$('max_words').value}}
-async function post(url,data,btn){btn.disabled=true;const t=btn.textContent;btn.textContent='Working…';
- try{const r=await fetch(url,{method:'POST',body:JSON.stringify(data)});const j=await r.json();if(j.error)throw j.error;return j}
- catch(e){alert(e)}finally{btn.disabled=false;btn.textContent=t}}
-$('go').onclick=async()=>{const j=await post('/research',req(),$('go'));if(!j)return;
- window.dz=j;$('dossier').value=j.text;$('r').classList.remove('hidden')};
-$('draftBtn').onclick=async()=>{const j=await post('/draft',{request:req(),dossier:window.dz.dossier,edited:$('dossier').value},$('draftBtn'));if(!j)return;
- $('subject').value=j.subject;$('body').value=j.body;
- $('notes').innerHTML='<p><b>Why it\'s personal</b></p><ul>'+j.personalization_notes.map(n=>'<li>'+n+'</li>').join('')+'</ul>'+
-  '<p><b>Voice:</b> '+j.voice_notes+'</p>'+(j.open_questions.length?'<p><b>Check before sending</b></p><ul>'+j.open_questions.map(n=>'<li>'+n+'</li>').join('')+'</ul>':'');
- $('d').classList.remove('hidden')};
-</script></body></html>"""
+STATIC = Path(__file__).parent / "static"
+# Windows can map these from the registry (e.g. .js -> text/plain), which breaks modules.
+for ext, kind in ((".js", "text/javascript"), (".css", "text/css"), (".svg", "image/svg+xml")):
+    mimetypes.add_type(kind, ext)
+JOB_TTL = 3600  # seconds a finished job is kept for a refreshed page to collect
 
 
 class EditedDossier(Dossier):
@@ -84,14 +42,84 @@ class EditedDossier(Dossier):
         return self._text
 
 
+class Job:
+    def __init__(self, work):
+        self.events, self.result, self.error = [], None, None
+        self.status = "running"
+        self.created = time.time()
+        self.lock = threading.Lock()
+        threading.Thread(target=self._run, args=(work,), daemon=True).start()
+
+    def _run(self, work):
+        try:
+            result = work(self.emit)
+            with self.lock:
+                self.result, self.status = result, "done"
+        except Exception as e:  # surfaced in the UI as a readable error
+            cause = f" (cause: {e.__cause__!r})" if e.__cause__ else ""
+            with self.lock:
+                self.error, self.status = f"{type(e).__name__}: {e}{cause}", "error"
+
+    def emit(self, event):
+        with self.lock:
+            self.events.append({**event, "t": time.time() - self.created})
+
+    def snapshot(self, after):
+        with self.lock:
+            return {"status": self.status, "events": self.events[after:], "total": len(self.events),
+                    "result": self.result, "error": self.error}
+
+
+jobs: dict[str, Job] = {}
+
+
+def start_job(work) -> str:
+    now = time.time()
+    for key in [k for k, j in jobs.items() if now - j.created > JOB_TTL]:
+        del jobs[key]
+    key = uuid.uuid4().hex
+    jobs[key] = Job(work)
+    return key
+
+
+def research_work(data):
+    req = OutreachRequest(**data["request"])
+    return lambda emit: engine.research(req, on_progress=emit).__dict__
+
+
+def draft_work(data):
+    req = OutreachRequest(**data["request"])
+    dossier = Dossier(**data["dossier"])
+    return lambda emit: engine.draft(req, dossier, revise=data.get("revise")).__dict__
+
+
 class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
-        self._send(200, PAGE.encode(), "text/html; charset=utf-8")
+        url = urlparse(self.path)
+        if url.path.startswith("/api/jobs/"):
+            job = jobs.get(url.path.rsplit("/", 1)[-1])
+            if not job:
+                return self._json(404, {"error": "This job is no longer running. The server may have restarted."})
+            after = int(parse_qs(url.query).get("after", ["0"])[0])
+            return self._json(200, job.snapshot(after))
+        name = "index.html" if url.path in ("/", "/index.html") else url.path.lstrip("/")
+        path = (STATIC / name).resolve()
+        if not path.is_file() or STATIC.resolve() not in path.parents:
+            return self._send(404, b"Not found", "text/plain")
+        ctype = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
+        if ctype.startswith("text/") or ctype.endswith("javascript"):
+            ctype += "; charset=utf-8"
+        self._send(200, path.read_bytes(), ctype)
 
     def do_POST(self):
         data = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
         try:
-            if self.path == "/research":
+            if self.path == "/api/research":
+                out = {"job": start_job(research_work(data))}
+            elif self.path == "/api/draft":
+                out = {"job": start_job(draft_work(data))}
+            # The original synchronous endpoints, kept for scripts that call them.
+            elif self.path == "/research":
                 dossier = engine.research(OutreachRequest(**data))
                 out = {"dossier": dossier.__dict__, "text": dossier.as_text()}
             elif self.path == "/draft":
@@ -100,17 +128,25 @@ class Handler(BaseHTTPRequestHandler):
                 dossier = original if data["edited"] == original.as_text() else EditedDossier(data["edited"])
                 out = engine.draft(req, dossier).__dict__
             else:
-                return self._send(404, b"{}", "application/json")
+                return self._json(404, {})
         except Exception as e:  # surface API errors in the UI during prototyping
             cause = f" (cause: {e.__cause__!r})" if e.__cause__ else ""
             out = {"error": f"{type(e).__name__}: {e}{cause}"}
-        self._send(200, json.dumps(out).encode(), "application/json")
+        self._json(200, out)
+
+    def _json(self, code, obj):
+        self._send(code, json.dumps(obj).encode(), "application/json")
 
     def _send(self, code, body, ctype):
         self.send_response(code)
         self.send_header("Content-Type", ctype)
+        self.send_header("Cache-Control", "no-cache")
         self.end_headers()
         self.wfile.write(body)
+
+    def log_message(self, fmt, *args):
+        if not self.path.startswith("/api/jobs/"):  # polling would drown the log
+            super().log_message(fmt, *args)
 
 
 if __name__ == "__main__":
