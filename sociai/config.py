@@ -56,6 +56,9 @@ class Settings:
     stripe_api_base: str | None = None  # tests point this at a local fake Stripe
     stripe_mode: str = "test"           # "test" or "live"; the key and events must match it
     sentry_dsn: str = ""                # optional error monitoring
+    demo_model: str = "claude-haiku-5-5"  # the landing-page demo runs on the cheapest model
+    demo_daily_limit: int = 100         # demos per UTC day across every visitor (a spend cap)
+    admin_token: str = ""               # unlocks GET /api/funnel; unset = the page is off
 
     @classmethod
     def from_env(cls):
@@ -74,6 +77,9 @@ class Settings:
             stripe_price_monthly=os.environ.get("STRIPE_PRICE_MONTHLY", ""),
             stripe_mode=(os.environ.get("SOCIAI_STRIPE_MODE") or "test").strip().lower(),
             sentry_dsn=os.environ.get("SENTRY_DSN", "").strip(),
+            demo_model=os.environ.get("SOCIAI_DEMO_MODEL") or "claude-haiku-5-5",
+            demo_daily_limit=_env_int("SOCIAI_DEMO_DAILY_LIMIT", 100),
+            admin_token=os.environ.get("SOCIAI_ADMIN_TOKEN", "").strip(),
         )
 
     def missing(self):

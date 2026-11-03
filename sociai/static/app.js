@@ -240,6 +240,25 @@ async function request(method, path, body, { raw = null, contentType = null, ret
 }
 const api = (path, body) => request(body === undefined ? "GET" : "POST", path, body);
 
+// Funnel steps, counted on the server per day. Nothing about the person is sent.
+function track(name, where = "") {
+  const attr = readAttr();
+  const body = JSON.stringify({ name, where, utm_source: attr.utm_source || "", fbclid: !!attr.fbclid });
+  try {
+    if (!navigator.sendBeacon?.("/api/event", new Blob([body], { type: "application/json" })))
+      fetch("/api/event", { method: "POST", headers: { "Content-Type": "application/json" }, body, keepalive: true }).catch(() => {});
+  } catch {}
+}
+// Where this browser first came from (utm_* and fbclid on the ad link), kept until the account
+// exists and then recorded on it once.
+function readAttr() { try { return JSON.parse(localStorage.getItem("sociai.attr") || "{}") || {}; } catch { return {}; } }
+async function sendAttribution() {
+  const attr = readAttr();
+  if (!Object.keys(attr).length || attr.sent) return;
+  const { http } = await request("POST", "/api/profile/attribution", attr);
+  if (http === 200) { try { localStorage.setItem("sociai.attr", JSON.stringify({ ...attr, sent: true })); } catch {} }
+}
+
 // The user's saved profile: background, default format, writing samples, resume text.
 let profile = null;
 async function loadProfile() {
@@ -445,8 +464,7 @@ function drawSignUp(email = "") {
   const form = gateCard({
     label: "Sociai", title: "Create your account", email,
     intro: "New accounts start with 2 free credits. Each credit covers a research run and up to 3 drafts.",
-    body: emailField(email) + passwordField("signup-password", "Password", { autocomplete: "new-password", meter: true })
-      + passwordField("signup-confirm", "Confirm password", { autocomplete: "new-password" }) + agreeBox("signup-agree"),
+    body: emailField(email) + passwordField("signup-password", "Password", { autocomplete: "new-password", meter: true }) + agreeBox("signup-agree"),
     submit: "Create account",
     foot: `<span class="muted">Already have an account?</span> ${gateLink("signin", "Sign in")}`,
   });
@@ -455,11 +473,11 @@ function drawSignUp(email = "") {
   const showExists = () => { showSignInError(""); $("#signin-err", form).innerHTML = exists; $("#signin-err", form).hidden = false; };
   onGateSubmit(form, async () => {
     const addr = $("#signin-email", form).value.trim();
-    const password = $("#signup-password", form).value, confirm = $("#signup-confirm", form).value;
+    const password = $("#signup-password", form).value; // one field, with Show; a typo is fixed with "Forgot your password?"
     if (!EMAIL_RE.test(addr)) return showSignInError("Enter your full email address.");
     if (password.length < MIN_PASSWORD) return showSignInError(`Use at least ${MIN_PASSWORD} characters for your password.`);
-    if (password !== confirm) return showSignInError("The two passwords don't match.");
     if (!$("#signup-agree", form).checked) return showSignInError("To create an account, agree to the Terms and Privacy Policy.");
+    track("signup_started");
     const check = await fetch("/api/check-email", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ email: addr }) });
     if (!check.ok) {
       const d = await check.json().catch(() => ({}));
@@ -477,6 +495,7 @@ function drawSignUp(email = "") {
     // With email confirmation on, Supabase answers an address that already has an account with
     // a user that has no identities (and sends no email) instead of an error.
     if (data.user && Array.isArray(data.user.identities) && !data.user.identities.length) return showExists();
+    track("signup_done");
     if (data.session) return startSession(data.session); // the project has email confirmation off
     drawCheckInbox(addr, "confirm");
   });
@@ -684,6 +703,7 @@ async function startDraft(id, { instruction = null, label = "First draft" } = {}
 
 function finishDraft(id, r) {
   revealNext.add(id);
+  if (!store.list().some((s) => s.state?.key === "draft" || s.state?.key === "copied")) track("first_draft");
   store.update(id, (p) => {
     const pend = p.draft.pending || {};
     p.draft.versions.push({
@@ -722,7 +742,7 @@ let ready = false;
 
 function render({ instant = false } = {}) {
   if (!ready) return;
-  const route = profile.onboarded_at ? parseRoute() : { view: "welcome" };
+  const route = parseRoute();
   let p = null;
   if (route.view === "project") {
     p = store.get(route.id);
@@ -984,6 +1004,7 @@ function composerHTML(b, mode) {
       ${isNew ? `<h1 class="display" id="ask">Who would you like to <em>reach out</em> to?</h1>` : `<h1 class="h2" id="ask" data-focus-on-enter>The brief</h1>`}
       <input class="who-input" id="f-target" name="target" aria-labelledby="ask" aria-describedby="who-hint" autocomplete="off" spellcheck="false"
         placeholder="A name with context, or a link to their page" value="${esc(b.target)}">
+      ${isNew && b.example ? '<p class="profile-note">An example to start with. Replace it with anyone you\'d write to.</p>' : ""}
       <p class="field-hint" id="who-hint">For example <button type="button" class="link-btn" data-act="example">${esc(pur.who)}</button>. Official pages work best.</p>
       <p class="field-error" id="err-target" hidden>Tell Sociai who this is for: a name with some context, or a link.</p>
     </div>
@@ -1122,7 +1143,7 @@ function mountComposer(root, { brief, mode, onChange, onSubmit }) {
   root.addEventListener("submit", (e) => e.preventDefault());
   root.addEventListener("input", (e) => {
     const t = e.target;
-    if (t === f.target) { b.target = t.value; if (t.value.trim()) { open(); $("#err-target", root).hidden = true; } }
+    if (t === f.target) { b.target = t.value; delete b.example; $(".profile-note", f.target.parentElement)?.remove(); if (t.value.trim()) { open(); $("#err-target", root).hidden = true; } }
     else if (t === f.goal) { b.goal = t.value; if (t.value.trim()) $("#err-goal", root).hidden = true; }
     else if (t === f.bg) b.background = t.value;
     else if (t === f.words) { touched.add("words"); const v = parseInt(t.value, 10); if (v > 0) setWords(v); }
@@ -1226,10 +1247,27 @@ function newBrief() {
   };
 }
 
+// The first brief a new account sees is a worked example, so a first draft is one tap away;
+// replacing the name is all it takes to write to someone else.
+const EXAMPLE_TARGET = PURPOSES[0].who;
+
+function upgradeHTML() {
+  if (account.credits !== 0) return "";
+  return `<div class="row upgrade-row"><div class="margin"><p class="label">Credits</p></div><div class="col">
+    <div class="import-banner" role="region" aria-label="Out of credits">
+    <p><b>You're out of credits.</b> Each credit covers one research run and up to 3 drafts. Your projects and drafts stay here either way.</p>
+    <div class="gate-actions"><a class="btn btn-primary btn-sm" href="#/pricing">Get more credits</a><a class="link-btn" href="#/account">Account and billing</a></div></div></div></div>`;
+}
+
 function deskView(_, from) {
   const all = store.list();
   const brief = store.pending || newBrief();
+  if (!all.length && !store.pending && !brief.target.trim()) {
+    const pur = PURPOSES.find((x) => x.id === brief.category && x.goal) || PURPOSES[0];
+    Object.assign(brief, { target: EXAMPLE_TARGET, category: pur.id, goal: brief.goal.trim() || pur.goal, example: true });
+  }
   $("#main").innerHTML = `<div class="ruled"><div class="page">
+    ${upgradeHTML()}
     ${importBannerHTML()}
     ${setupNudgeHTML()}
     <form class="composer" id="composer" novalidate>${composerHTML(brief, "new")}</form>
@@ -2129,148 +2167,15 @@ function profileView() {
   return now; // leaving the page saves anything still waiting
 }
 
-/* ───────── Onboarding ───────── */
+/* ───────── First run ───────── */
 
-// Shown once, after the first sign-in: main goal, background and resume, writing samples.
-// Each step saves when you continue; any step can be skipped. It never comes back once it's
-// finished or skipped, and everything stays editable on the Profile page.
-const ONBOARD_STEPS = ["goal", "about", "samples"];
-let onboardStep = null;
-
-function firstOpenStep() {
-  if (!profile.main_goal && !profile.main_goal_note) return 0;
-  if (!profile.background && !profile.resume_text) return 1;
-  return 2;
-}
-
-async function finishOnboarding() {
+// New accounts go straight to the desk; the profile (goal, background, writing samples) is
+// filled in later, nudged from the desk. onboarded_at is set on the first visit so the nudge
+// knows what's still missing.
+async function markOnboarded() {
+  if (profile.onboarded_at) return;
   const { http, data } = await request("POST", "/api/profile/onboarded", {});
-  if (http !== 200) return toast(data?.error || "Couldn't save that. Try again.");
-  profile = data;
-  onboardStep = null;
-  go("#/");
-}
-
-function onboardingView() {
-  if (onboardStep === null) onboardStep = firstOpenStep();
-  const step = ONBOARD_STEPS[onboardStep];
-  const samples = profile.samples.map((x) => x.body);
-  const shown = samples.slice(0, 3);
-  if (!shown.length) shown.push("");
-  const progress = `<ol class="onboard-steps" aria-label="Setup progress">${["Your goal", "About you", "Your voice"].map((t, i) =>
-    `<li class="${i < onboardStep ? "is-done" : i === onboardStep ? "is-current" : ""}"${i === onboardStep ? ' aria-current="step"' : ""}><span class="k" aria-hidden="true"></span>${t}</li>`).join("")}</ol>`;
-  const head = (title, text) => `<div class="row lead"><div class="margin"><p class="label">Step ${onboardStep + 1} of 3</p></div><div class="col">
-      ${progress}
-      <h1 class="h2" data-focus-on-enter>${title}</h1>
-      <p class="field-hint">${text}</p></div></div>`;
-  const body = {
-    goal: `${head("What do you mainly want to use Sociai for?", "New outreach starts from this goal. You can change it for any message, and on your profile later.")}
-      <div class="row"><div class="margin"><p class="label">Main goal</p></div><div class="col">
-        <div class="choices" role="radiogroup" aria-label="Main goal">${MAIN_GOALS.map(([v, l]) =>
-          `<button type="button" class="choice" role="radio" aria-checked="${profile.main_goal === v}" data-act="ob-goal" data-v="${v}"><span class="k" aria-hidden="true"></span>${l}</button>`).join("")}</div>
-        <label class="label" for="ob-note" style="display:block;margin-top:var(--s5)">In your own words <span class="muted">(optional)</span></label>
-        <textarea class="textarea serif" id="ob-note" rows="2" maxlength="500" placeholder="e.g. Land a summer research position in NLP">${esc(profile.main_goal_note)}</textarea>
-        <p class="field-error" id="ob-err" hidden></p></div></div>`,
-    about: `${head("Tell Sociai about you", "Sociai uses this to find real common ground with the people you write to. Upload a resume, write a few lines, or both.")}
-      <div class="row"><div class="margin"><label class="label" for="ob-bg">About you</label></div><div class="col">
-        <textarea class="textarea" id="ob-bg" rows="4" placeholder="e.g. CS junior at Stanford; built a small benchmark for LLM reasoning; interned at Plaid">${esc(profile.background)}</textarea></div></div>
-      <div class="row"><div class="margin"><p class="label">Resume</p><p class="margin-note">PDF or Word (.docx), up to 5 MB.</p></div><div class="col">
-        <div class="resume-file" id="ob-file"></div>
-        <input type="file" id="ob-resume" class="vh" tabindex="-1" accept=".pdf,.docx,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document">
-        <p class="field-error" id="ob-resume-err" hidden></p>
-        <div id="ob-resume-box" ${profile.resume_text ? "" : "hidden"}>
-          <label class="label" for="ob-resume-text" style="display:block;margin-top:var(--s4)">Text Sociai uses</label>
-          <textarea class="textarea" id="ob-resume-text" rows="7">${esc(profile.resume_text)}</textarea>
-          <p class="field-hint">Check what came out of the file and fix anything that's wrong.</p></div>
-        <p class="field-error" id="ob-err" hidden></p></div></div>`,
-    samples: `${head("Add a few things you've written", "Paste one to three emails, posts or messages you wrote yourself, so drafts sound like you.")}
-      <div class="row"><div class="margin"><p class="label">Writing samples</p></div><div class="col">
-        <div class="samples" id="ob-samples">${shown.map((x, i) => `<div class="sample">
-          <label class="vh" for="ob-sample-${i}">Writing sample ${i + 1}</label>
-          <textarea class="textarea" id="ob-sample-${i}" data-ob-sample rows="5" placeholder="Paste an email, post or message you wrote">${esc(x)}</textarea></div>`).join("")}</div>
-        ${shown.length < 3 ? '<button type="button" class="link-btn" data-act="ob-add-sample" style="margin-top:10px">Add another sample</button>' : ""}
-        <p class="field-error" id="ob-err" hidden></p></div></div>`,
-  }[step];
-  $("#main").innerHTML = `<div class="ruled"><div class="page"><form class="composer onboard" novalidate>
-    ${body}
-    <div class="row"><div class="margin"></div><div class="col composer-actions">
-      ${primary(onboardStep === 2 ? "Finish" : "Continue", "ob-next")}
-      <button type="button" class="btn btn-ghost" data-act="ob-skip">Skip this step</button>
-      <button type="button" class="link-btn" data-act="ob-skip-all">Skip setup for now</button>
-    </div></div>
-  </form></div></div>`;
-
-  const root = $("#main");
-  const err = (msg) => { const el = $("#ob-err"); el.textContent = msg || ""; el.hidden = !msg; };
-  const next = () => { if (onboardStep >= 2) return finishOnboarding(); onboardStep++; render(); };
-  const drawFile = () => {
-    const el = $("#ob-file");
-    if (el) el.innerHTML = profile.resume_filename
-      ? `<span class="file-name">${esc(profile.resume_filename)}</span><button type="button" class="btn btn-line btn-sm" data-act="ob-pick">Replace</button>`
-      : `<button type="button" class="btn btn-line btn-sm" data-act="ob-pick">Upload resume</button><span class="muted">PDF or .docx</span>`;
-  };
-  drawFile();
-
-  const save = {
-    async goal() {
-      const goal = $("[data-act='ob-goal'][aria-checked='true']")?.dataset.v || "";
-      const note = $("#ob-note").value.trim();
-      if (!goal && !note) { err("Choose a goal or describe it, or skip this step."); return false; }
-      return request("PUT", "/api/profile", { main_goal: goal || "other", main_goal_note: note });
-    },
-    async about() {
-      const background = $("#ob-bg").value, resumeText = $("#ob-resume-text").value;
-      if (!background.trim() && !resumeText.trim()) { err("Write a few lines or upload a resume, or skip this step."); return false; }
-      return request("PUT", "/api/profile", { background, resume_text: resumeText });
-    },
-    async samples() {
-      const edited = $$("[data-ob-sample]").map((t) => t.value.trim()).filter(Boolean);
-      if (!edited.length) { err("Paste at least one sample, or skip this step."); return false; }
-      return request("PUT", "/api/profile/samples", { samples: [...edited, ...samples.slice(3)] });
-    },
-  };
-
-  $("#ob-resume")?.addEventListener("change", async (e) => {
-    const file = e.target.files[0];
-    e.target.value = "";
-    if (!file) return;
-    const box = $("#ob-resume-err");
-    box.hidden = true;
-    $("#ob-file").innerHTML = `<span class="muted" role="status">Reading ${esc(file.name)}…</span>`;
-    const r = await uploadResume(file);
-    if (r.ok) {
-      $("#ob-resume-text").value = profile.resume_text;
-      $("#ob-resume-box").hidden = false;
-      err("");
-    } else { box.textContent = r.error; box.hidden = false; }
-    drawFile();
-  });
-  root.addEventListener("input", () => err(""));
-  root.addEventListener("click", async (e) => {
-    const a = e.target.closest("[data-act]");
-    if (!a) return;
-    const act = a.dataset.act;
-    if (act === "ob-goal") { $$("[data-act='ob-goal']").forEach((el) => el.setAttribute("aria-checked", String(el === a))); err(""); }
-    else if (act === "ob-pick") $("#ob-resume").click();
-    else if (act === "ob-add-sample") {
-      const n = $$("[data-ob-sample]").length;
-      $("#ob-samples").insertAdjacentHTML("beforeend", `<div class="sample"><label class="vh" for="ob-sample-${n}">Writing sample ${n + 1}</label>
-        <textarea class="textarea" id="ob-sample-${n}" data-ob-sample rows="5" placeholder="Paste an email, post or message you wrote"></textarea></div>`);
-      if (n + 1 >= 3) a.remove();
-      $(`#ob-sample-${n}`).focus();
-    } else if (act === "ob-skip") next();
-    else if (act === "ob-skip-all") { a.disabled = true; finishOnboarding(); }
-    else if (act === "ob-next") {
-      a.disabled = true;
-      const r = await save[step]();
-      a.disabled = false;
-      if (!r) return;
-      if (r.http !== 200) return err(r.data?.error || "Couldn't save that. Try again.");
-      profile = r.data;
-      next();
-    }
-  });
-  return () => {};
+  if (http === 200) profile = data;
 }
 
 // What's still missing from the profile, for the Desk's "finish setting up" note.
@@ -2451,8 +2356,8 @@ function trackDraft(q) {
 }
 
 initTracker({ request, toast, esc, icons: I });
-const PAGES = { desk: deskView, profile: profileView, pricing: pricingView, account: accountView, welcome: onboardingView, tracker: trackerView };
-const PAGE_TITLES = { profile: "Your profile", pricing: "Pricing", account: "Account", welcome: "Welcome", tracker: "Tracker" };
+const PAGES = { desk: deskView, profile: profileView, pricing: pricingView, account: accountView, tracker: trackerView };
+const PAGE_TITLES = { profile: "Your profile", pricing: "Pricing", account: "Account", tracker: "Tracker" };
 const VIEWS = { recipient: recipientView, research: researchView, review: reviewView, draft: draftView };
 
 /* ───────── Global interactions ───────── */
@@ -2569,10 +2474,47 @@ async function startSession(session) {
     return showFatal("Couldn't load your account", "Sociai couldn't load your projects and profile. Check your connection, then refresh the page.");
   }
   ready = true;
+  await markOnboarded();
+  const claimed = await claimDemo(); // the landing-page demo, now in full, becomes the first project
   render({ instant: true });
   resumeJobs();
   if (me.data.blocked) toast(me.data.blocked, { ms: 12000 });
   handleCheckoutReturn();
+  sendAttribution();
+  if (claimed) {
+    go(stageHash(claimed, "draft"));
+    toast("Your demo draft is ready in full. Copy it, or refine it after a research run of your own.", { ms: 9000 });
+  }
+}
+
+// The demo this browser ran on the landing page: its research and full draft become a project,
+// so the first thing a new account sees is the email it came for. One claim per demo.
+async function claimDemo() {
+  let saved = null;
+  try { saved = JSON.parse(localStorage.getItem("sociai.demo") || "null"); } catch {}
+  if (!saved?.id || saved.claimed) return null;
+  const { http, data } = await request("POST", "/api/demo/claim", { id: saved.id });
+  try { localStorage.setItem("sociai.demo", JSON.stringify({ ...saved, claimed: true })); } catch {}
+  if (http !== 200 || !data.demo) return null;
+  const d = data.demo, now = Date.now();
+  const p = store.create({
+    target: d.target, category: d.category || "professor", goal: d.goal, background: profile.background || "",
+    samples: profile.samples.map((x) => x.body), channel: "email", max_words: profile.default_max_words || 160,
+  });
+  store.update(p.id, (q) => {
+    Object.assign(q.research, { status: "done", startedAt: now, finishedAt: now, dossier: d.dossier, events: [],
+      brief: { target: d.target, goal: d.goal, background: q.brief.background } });
+    q.review = buildReview(d.dossier, null);
+    q.review.hooks.forEach((h) => { h.selected = true; });
+    q.draft.versions.push({
+      id: uid(), at: now, label: "From the demo", subject: d.draft.subject || "", body: d.draft.body || "", edited: false,
+      threads: q.review.hooks.map((h) => ({ id: h.id, text: h.text })),
+      notes: { personal: d.draft.personalization_notes || [], voice: d.draft.voice_notes || "", questions: d.draft.open_questions || [] },
+    });
+    q.draft.current = 0;
+    q.draftsLeft = 0; // the demo used no credit; a research run of their own adds 3 drafts
+  }, "any");
+  return p;
 }
 
 const LINK_ERROR = "That link has expired or was already used.";
@@ -2602,6 +2544,13 @@ async function boot() {
   const tokenHash = query.get("token_hash"), otpType = query.get("type");
   const screen = requestedScreen();
   if (tokenHash) kind = otpType === "recovery" ? "reset" : "confirmed";
+  // From an ad: remember where this browser came from, and the landing-page demo it ran.
+  const attr = Object.fromEntries(["utm_source", "utm_medium", "utm_campaign"].filter((k) => query.get(k)).map((k) => [k, query.get(k).slice(0, 64)]));
+  if (query.has("fbclid")) attr.fbclid = true;
+  try {
+    if (Object.keys(attr).length && !readAttr().sent) localStorage.setItem("sociai.attr", JSON.stringify(attr));
+    if (query.get("demo")) localStorage.setItem("sociai.demo", JSON.stringify({ id: query.get("demo"), at: Date.now() }));
+  } catch {}
   let auth;
   try {
     auth = await initAuth();
@@ -2618,7 +2567,7 @@ async function boot() {
     const { data, error } = await verifyEmailLink(tokenHash, otpType);
     if (error) linkError = error; else session = data.session;
   }
-  for (const k of ["auth", "code", "token_hash", "type", "error", "error_code", "error_description", "sb_flow_id", "mode"]) query.delete(k);
+  for (const k of ["auth", "code", "token_hash", "type", "error", "error_code", "error_description", "sb_flow_id", "mode", "demo"]) query.delete(k);
   const hash = /(^#|&)(access_token|error)=/.test(location.hash) ? "" : location.hash;
   history.replaceState(null, "", location.pathname + (query.toString() ? `?${query}` : "") + hash);
   loadPixel();
