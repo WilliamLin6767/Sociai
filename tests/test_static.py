@@ -33,13 +33,19 @@ class VersionedAssets(unittest.TestCase):
             return res.headers, res.read().decode()
 
     def test_pages_link_versioned_css_and_js(self):
-        for page in ("/app", "/", "/privacy", "/terms"):
+        for page in ("/app", "/privacy", "/terms"):
             with self.subTest(page=page):
                 headers, html = self.get(page)
                 self.assertIn(f'href="/sociai.css?v={V}"', html)
                 self.assertNotIn('href="/sociai.css"', html)
                 self.assertEqual(headers["Cache-Control"], "no-cache")
-        self.assertIn(f'src="/app.js?v={V}"', self.get("/app")[1])
+        app = self.get("/app")[1]
+        self.assertIn(f'src="/app.js?v={V}"', app)
+        for name in ("store", "auth", "loom", "tracker"):
+            self.assertIn(f'<link rel="modulepreload" href="/{name}.js?v={V}">', app)
+        headers, landing = self.get("/")
+        self.assertNotIn('href="/sociai.css', landing, "the landing page carries its own styles (one request)")
+        self.assertEqual(headers["Cache-Control"], "no-cache")
 
     def test_module_imports_are_versioned(self):
         js = self.get(f"/app.js?v={V}")[1]
