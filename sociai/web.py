@@ -26,6 +26,9 @@ changes them only through the database functions defined there.
   POST /api/checkout       {plan: "pack" | "monthly"} -> {url} of a Stripe Checkout page
   POST /api/billing-portal -> {url} of the Stripe customer portal
   POST /api/stripe/webhook public; Stripe-signed events add credits (once per event)
+  POST /api/event          public: {name: landing_view | cta_click, where?, utm_source?, fbclid?}
+                           counted in the server log (no personal data), for the landing page's
+                           click-through rate
   GET  /api/contacts?today=YYYY-MM-DD      the outreach tracker: {contacts: [...]}, newest first
   POST /api/contacts                       {name, email?, role?, organization?, subject?, status?,
                                             sent_at?, replied_at?, follow_up_at?, notes?} -> {contact}
@@ -189,6 +192,31 @@ class Limiter:
 
 
 limiter = Limiter()
+
+# ───────── Landing page events ─────────
+#
+# The landing page reports a view and each CTA click. They're printed to the log, with running
+# totals for the UTC day, so the click-through rate can be read off Render's logs. Nothing about
+# the visitor is kept: only the event, the button, the utm_source and whether an fbclid was there.
+EVENTS = ("landing_view", "cta_click")
+WORD = re.compile(r"[^A-Za-z0-9_.-]")
+_events: dict = {"day": None, "landing_view": 0, "cta_click": 0}
+_events_lock = threading.Lock()
+
+
+def record_event(name: str, where: str, utm_source: str, fbclid: bool) -> dict:
+    """Count an event and print one log line; returns the day's totals so far."""
+    today = datetime.now(timezone.utc).date().isoformat()
+    with _events_lock:
+        if _events["day"] != today:
+            _events.update(day=today, landing_view=0, cta_click=0)
+        _events[name] += 1
+        views, clicks = _events["landing_view"], _events["cta_click"]
+    ctr = f"{100 * clicks / views:.1f}%" if views else "-"
+    print(f"[event] {name}{' where=' + where if where else ''} utm_source={utm_source or '-'} fbclid={'yes' if fbclid else 'no'}"
+          f" | today views={views} clicks={clicks} ctr={ctr}", flush=True)
+    return {"views": views, "clicks": clicks}
+
 
 # Caps on what a research or draft request may carry into a prompt (the profile has the same ones).
 REQUEST_LIMITS = {"target": 500, "goal": 2000, "sender_background": 20000}
@@ -541,6 +569,14 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(200, {"ok": True})
         if url.path == "/api/stripe/webhook":
             return self._stripe_webhook()
+        if url.path == "/api/event":
+            limit_or_reject("public", self._client_ip())
+            data = self._read_json(limit=4096)
+            if data.get("name") not in EVENTS:
+                raise Reject(400, "Unknown event.")
+            record_event(data["name"], WORD.sub("", str(data.get("where") or ""))[:24],
+                         WORD.sub("", str(data.get("utm_source") or ""))[:32], bool(data.get("fbclid")))
+            return self._json(200, {"ok": True})
         if url.path == "/api/profile/resume":
             user = self._user()
             limit_or_reject("upload", user["id"])

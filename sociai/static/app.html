@@ -12,8 +12,15 @@
 <link rel="apple-touch-icon" href="/apple-touch-icon.png">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=Lexend:wght@400;500&family=Instrument+Sans:wght@400;500;600&family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,500;0,6..72,600;1,6..72,400;1,6..72,500&display=swap">
 <link rel="stylesheet" href="/sociai.css">
+<!-- The modules app.js imports, fetched alongside it instead of one after another. -->
+<link rel="modulepreload" href="/store.js">
+<link rel="modulepreload" href="/auth.js">
+<link rel="modulepreload" href="/loom.js">
+<link rel="modulepreload" href="/tracker.js">
+<link rel="modulepreload" href="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.117.3/+esm" crossorigin>
 <script>
   try { const t = localStorage.getItem("sociai.theme"); if (t) document.documentElement.dataset.theme = t; } catch {}
 </script>
