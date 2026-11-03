@@ -26,9 +26,16 @@ changes them only through the database functions defined there.
   POST /api/checkout       {plan: "pack" | "monthly"} -> {url} of a Stripe Checkout page
   POST /api/billing-portal -> {url} of the Stripe customer portal
   POST /api/stripe/webhook public; Stripe-signed events add credits (once per event)
-  POST /api/event          public: {name: landing_view | cta_click, where?, utm_source?, fbclid?}
-                           counted in the server log (no personal data), for the landing page's
-                           click-through rate
+  POST /api/event          public: {name, where?, utm_source?, fbclid?}: a funnel step the browser
+                           reports (landing_view, cta_click, signup_started, signup_done,
+                           first_draft). Counted per day; nothing about the visitor is kept.
+  POST /api/demo           public: {target, goal, purpose?} -> {id}: the landing-page demo, one
+                           per IP per day, on the cheapest model; no credits involved
+  GET  /api/demo/<id>?after=N   {status, events, teaser}: progress, then a teaser of the result
+  POST /api/demo/claim     {id} -> the demo's full research and draft, for the account that
+                           signed up after seeing it (once)
+  POST /api/profile/attribution  {utm_source?, utm_medium?, utm_campaign?, fbclid?} once per user
+  GET  /api/funnel         daily funnel counts; needs SOCIAI_ADMIN_TOKEN (Bearer or ?token=)
   GET  /api/contacts?today=YYYY-MM-DD      the outreach tracker: {contacts: [...]}, newest first
   POST /api/contacts                       {name, email?, role?, organization?, subject?, status?,
                                             sent_at?, replied_at?, follow_up_at?, notes?} -> {contact}
@@ -48,6 +55,7 @@ Settings come from environment variables or a local .env file (see .env.example)
 
 import base64
 import hashlib
+import hmac
 import json
 import math
 import mimetypes
@@ -56,6 +64,7 @@ import re
 import threading
 import time
 import traceback
+import uuid
 from collections import deque
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -186,6 +195,13 @@ class Limiter:
             q.append(now)
             return 0.0
 
+    def release(self, key: str):
+        """Give back the most recent count for a key (e.g. a demo that failed)."""
+        with self._lock:
+            q = self._hits.get(key)
+            if q:
+                q.pop()
+
     def reset(self):
         with self._lock:
             self._hits.clear()
@@ -193,29 +209,150 @@ class Limiter:
 
 limiter = Limiter()
 
-# ───────── Landing page events ─────────
+# ───────── Funnel events ─────────
 #
-# The landing page reports a view and each CTA click. They're printed to the log, with running
-# totals for the UTC day, so the click-through rate can be read off Render's logs. Nothing about
-# the visitor is kept: only the event, the button, the utm_source and whether an fbclid was there.
-EVENTS = ("landing_view", "cta_click")
+# Each step of the funnel is counted per UTC day: in this process (for the running totals in the
+# log line) and in the events table (sociai_count_event, so counts survive deploys and GET
+# /api/funnel can show them). Nothing about the visitor is kept: only the step, which button, the
+# utm_source and whether an fbclid was there.
+FUNNEL = ("landing_view", "demo_used", "signup_started", "signup_done", "first_draft", "checkout")
+CLIENT_EVENTS = ("landing_view", "cta_click", "signup_started", "signup_done", "first_draft")  # the browser may report these
+SERVER_EVENTS = ("demo_used", "demo_claimed", "checkout")                                      # only the server records these
 WORD = re.compile(r"[^A-Za-z0-9_.-]")
-_events: dict = {"day": None, "landing_view": 0, "cta_click": 0}
+_events: dict = {"day": None}
 _events_lock = threading.Lock()
+_events_warned = False
 
 
-def record_event(name: str, where: str, utm_source: str, fbclid: bool) -> dict:
+def record_event(name: str, where: str = "", utm_source: str = "", fbclid: bool = False) -> dict:
     """Count an event and print one log line; returns the day's totals so far."""
+    global _events_warned
     today = datetime.now(timezone.utc).date().isoformat()
     with _events_lock:
         if _events["day"] != today:
-            _events.update(day=today, landing_view=0, cta_click=0)
-        _events[name] += 1
-        views, clicks = _events["landing_view"], _events["cta_click"]
-    ctr = f"{100 * clicks / views:.1f}%" if views else "-"
+            _events.clear()
+            _events["day"] = today
+        _events[name] = _events.get(name, 0) + 1
+        totals = {k: v for k, v in _events.items() if k != "day"}
+    views, signups = totals.get("landing_view", 0), totals.get("signup_done", 0)
+    rate = f"{100 * signups / views:.1f}%" if views else "-"
+    keys = [k for k in FUNNEL if k in totals] + [k for k in totals if k not in FUNNEL]
     print(f"[event] {name}{' where=' + where if where else ''} utm_source={utm_source or '-'} fbclid={'yes' if fbclid else 'no'}"
-          f" | today views={views} clicks={clicks} ctr={ctr}", flush=True)
-    return {"views": views, "clicks": clicks}
+          f" | today " + " ".join(f"{k}={totals[k]}" for k in keys) + f" signup_rate={rate}", flush=True)
+    if supa is not None:
+        def persist():
+            global _events_warned
+            try:
+                supa.rpc("sociai_count_event", p_name=name)
+            except Exception as e:  # best effort: a count is never worth an error
+                if not _events_warned:  # e.g. the migration hasn't been run yet; say so once
+                    _events_warned = True
+                    print(f"[event] not saved to the database ({e}); run the demo_and_funnel migration", flush=True)
+        threading.Thread(target=persist, daemon=True).start()
+    return totals
+
+
+def funnel_text(rows: list) -> str:
+    """The funnel as a plain-text table, newest day first."""
+    names = list(FUNNEL)
+    widths = [max(len(n), 6) for n in names]
+    lines = ["day         " + " ".join(n.rjust(w) for n, w in zip(names, widths))]
+    for row in rows:
+        counts = row.get("counts") or {}
+        lines.append(f"{row.get('day', '')}  " + " ".join(str(counts.get(n, 0)).rjust(w) for n, w in zip(names, widths)))
+    if len(rows) > 0:
+        total = {n: sum((r.get("counts") or {}).get(n, 0) for r in rows) for n in names}
+        lines.append("total       " + " ".join(str(total[n]).rjust(w) for n, w in zip(names, widths)))
+        views = total["landing_view"]
+        if views:
+            lines.append("")
+            lines.append("of landing views: " + ", ".join(f"{n} {100 * total[n] / views:.1f}%" for n in names[1:]))
+    return "\n".join(lines) + "\n"
+
+
+# ───────── The landing-page demo ─────────
+#
+# A visitor names a person and a goal; the server researches them and writes a draft on the
+# cheapest model with a small search budget, then shows a teaser (the summary, two facts and the
+# first lines of the email). The whole result is kept, keyed by the demo id the browser holds, so
+# the account they create next can claim it and find the full draft waiting. One demo per IP per
+# day, a daily cap across everyone, and no credits anywhere.
+DEMO_SEARCHES, DEMO_FETCHES = 2, 3
+DEMO_WORDS = 130
+DEMO_CALL_TIMEOUT = 90        # seconds per API call; Haiku finishes a demo's research in about 30
+DEMO_FETCH_TOKENS = 20000     # per page read: a faculty page is a few thousand tokens; three unbounded pages were 229k
+DEMO_DRAFT_RETRIES = 3        # the draft is a small call right after a big one; a per-minute token limit can refuse it at first
+DEMO_TTL = 24 * 3600          # seconds a demo is kept in memory (the database keeps it longer)
+DEMO_PURPOSES = {
+    "research": ("professor", "Ask whether their group takes undergraduate research assistants, or for a short call about open projects."),
+    "job": ("recruiter", "Ask about internship or new-grad openings on their team, or for a referral."),
+    "advice": ("advice", "Ask for 15 minutes of advice about their path."),
+}
+SENTENCE_END = re.compile(r"(?<=[.!?])\s+")
+demos: dict[str, dict] = {}   # demo id -> {job, target, goal, purpose, ip_hash, created, result?, claimed_by?}
+_demos_lock = threading.Lock()
+
+
+def demo_teaser(result: dict) -> dict:
+    """What the landing page may show: the research summary, two facts, and the first two
+    sentences of the email. The rest stays on the server until the visitor signs up."""
+    d, draft = result["dossier"], result["draft"]
+    body = (draft.get("body") or "").strip()
+    paragraphs = [p for p in body.split("\n") if p.strip()]
+    greeting = paragraphs[0] if paragraphs and len(paragraphs[0]) < 60 else ""
+    rest = "\n".join(paragraphs[1:] if greeting else paragraphs)
+    sentences = SENTENCE_END.split(rest.strip())
+    shown = " ".join(sentences[:2]).strip()
+    hidden_words = max(0, len(rest.split()) - len(shown.split()))
+    return {
+        "name": d.get("name") or "", "headline": d.get("headline") or "",
+        "summary": " ".join(SENTENCE_END.split((d.get("summary") or "").strip())[:2])[:320],
+        "facts": [{"fact": f.get("fact", ""), "source": f.get("source", "")} for f in (d.get("facts") or [])[:2] if isinstance(f, dict)],
+        "sources": len(d.get("sources") or []),
+        "subject": draft.get("subject") or "", "greeting": greeting, "opening": shown,
+        "hidden_words": hidden_words, "words": len(body.split()),
+    }
+
+
+def demo_work(demo_id: str, target: str, goal: str, purpose: str, ip: str):
+    req = OutreachRequest(target=target, goal=goal, channel="email", max_words=DEMO_WORDS)
+    ip_hash = hashlib.sha256(ip.encode()).hexdigest()[:32]
+
+    def run(emit, usage):
+        try:
+            dossier = demo_engine.research(req, on_progress=emit, usage=usage)
+            emit({"kind": "drafting"})
+            for attempt in range(DEMO_DRAFT_RETRIES):
+                try:
+                    draft = demo_engine.draft(req, dossier, usage=usage)
+                    break
+                except anthropic.RateLimitError:
+                    if attempt == DEMO_DRAFT_RETRIES - 1:
+                        raise
+                    time.sleep(20)  # per-minute limits reset quickly
+        except Exception:
+            limiter.release(f"demo_ip:{ip}")  # a failed demo doesn't use up the visitor's one a day
+            raise
+        result = {"dossier": dossier.__dict__, "draft": draft.__dict__}
+        with _demos_lock:
+            if demo_id in demos:
+                demos[demo_id]["result"] = result
+        if supa is not None:
+            try:
+                supa.rpc("sociai_save_demo", p_id=demo_id, p_ip_hash=ip_hash, p_target=target, p_goal=goal,
+                         p_purpose=purpose, p_dossier=result["dossier"], p_draft=result["draft"])
+            except SupabaseError as e:
+                print(f"[demo] {demo_id} kept in memory only ({e})", flush=True)
+        return result
+
+    return run
+
+
+def forget_old_demos():
+    now = time.time()
+    with _demos_lock:
+        for key in [k for k, d in demos.items() if now - d["created"] > DEMO_TTL]:
+            del demos[key]
 
 
 # Caps on what a research or draft request may carry into a prompt (the profile has the same ones).
@@ -232,12 +369,20 @@ billing: Billing | None = None
 billing_off_reason = ""
 
 
+demo_engine: Engine | None = None
+
+
 def setup(new_settings: Settings, new_engine: Engine | None = None):
-    global settings, supa, engine, billing, billing_off_reason
+    global settings, supa, engine, demo_engine, billing, billing_off_reason
     settings = new_settings
     supa = Supabase(settings.supabase_url, settings.supabase_anon_key, settings.supabase_service_key) \
         if not settings.missing() else None
     engine = new_engine or Engine()
+    # The landing-page demo: the cheapest model and a small research budget, so a run costs cents.
+    demo_engine = Engine(client=engine.client, model=settings.demo_model)
+    demo_engine.max_searches, demo_engine.max_fetches = DEMO_SEARCHES, DEMO_FETCHES
+    demo_engine.timeout = DEMO_CALL_TIMEOUT  # a stalled call fails the demo instead of pinning it
+    demo_engine.fetch_tokens = DEMO_FETCH_TOKENS
     billing, billing_off_reason = Billing.from_settings(settings)
 
 
@@ -328,8 +473,9 @@ def log_run(kind, usage: RunUsage, seconds, status):
 
 
 class Job:
-    def __init__(self, job_id, work, kind, user_id):
-        self.id, self.kind, self.user_id = job_id, kind, user_id
+    def __init__(self, job_id, work, kind, user_id, record=True):
+        """record: the job has a row in the database to close (demos don't)."""
+        self.id, self.kind, self.user_id, self.record = job_id, kind, user_id, record
         self.events, self.result, self.error = [], None, None
         self.status = "running"
         self.usage = RunUsage()
@@ -348,6 +494,8 @@ class Job:
                 self.error, self.status = message, "error"
         finally:
             log_run(self.kind, self.usage, time.time() - self.created, self.status)
+            if not self.record:
+                return
             try:  # records the outcome; a failed research run gets its credit back here
                 supa.rpc("sociai_finish_job", p_job=self.id, p_status=self.status, p_usage=self.usage.summary())
             except SupabaseError as e:
@@ -524,6 +672,10 @@ class Handler(BaseHTTPRequestHandler):
                                     "supabase_anon_key": settings.supabase_anon_key})
         if url.path == "/api/contacts":
             return self._contacts("GET", url)
+        if url.path.startswith("/api/demo/"):
+            return self._demo_snapshot(url)
+        if url.path == "/api/funnel":
+            return self._funnel(url)
         user = self._user()
         if url.path == "/api/me":
             account = self._activate(user, allow_blocked=True)
@@ -572,10 +724,21 @@ class Handler(BaseHTTPRequestHandler):
         if url.path == "/api/event":
             limit_or_reject("public", self._client_ip())
             data = self._read_json(limit=4096)
-            if data.get("name") not in EVENTS:
+            if data.get("name") not in CLIENT_EVENTS:
                 raise Reject(400, "Unknown event.")
             record_event(data["name"], WORD.sub("", str(data.get("where") or ""))[:24],
                          WORD.sub("", str(data.get("utm_source") or ""))[:32], bool(data.get("fbclid")))
+            return self._json(200, {"ok": True})
+        if url.path == "/api/demo":
+            return self._start_demo()
+        if url.path == "/api/demo/claim":
+            return self._claim_demo(self._user())
+        if url.path == "/api/profile/attribution":
+            user = self._user()
+            data = self._read_json(limit=4096)
+            clean = {k: WORD.sub("", str(data.get(k) or ""))[:64] for k in ("utm_source", "utm_medium", "utm_campaign")}
+            supa.rpc("sociai_set_attribution", p_user=user["id"], p_source=clean["utm_source"], p_medium=clean["utm_medium"],
+                     p_campaign=clean["utm_campaign"], p_fbclid=bool(data.get("fbclid")))
             return self._json(200, {"ok": True})
         if url.path == "/api/profile/resume":
             user = self._user()
@@ -595,7 +758,9 @@ class Handler(BaseHTTPRequestHandler):
             customer = self._customer(user)
             if plan == "monthly" and billing.has_subscription(customer):
                 raise Reject(409, "You already have the monthly plan. You can manage it from your account page.")
-            return self._json(200, {"url": billing.checkout_url(user["id"], customer, plan)})
+            checkout = billing.checkout_url(user["id"], customer, plan)
+            record_event("checkout", plan)
+            return self._json(200, {"url": checkout})
         if url.path == "/api/billing-portal":
             user = self._user()
             limit_or_reject("billing", user["id"])
@@ -734,6 +899,79 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(200, {"contact": tracker.present(rows[0], today)})
         except tracker.Invalid as e:
             raise Reject(400, str(e))
+
+    # ── The landing-page demo ──
+
+    def _start_demo(self):
+        ip = self._client_ip()
+        limit_or_reject("public", ip)
+        data = self._read_json(limit=4096)
+        target = str(data.get("target") or "").strip()[:200]
+        purpose = data.get("purpose") if data.get("purpose") in DEMO_PURPOSES else "research"
+        goal = str(data.get("goal") or "").strip()[:300] or DEMO_PURPOSES[purpose][1]
+        if len(target) < 3:
+            raise Reject(400, "Name the person you'd write to, with a little context: e.g. Prof. Fei-Fei Li, Stanford.")
+        if demo_engine is None:
+            raise Reject(503, "The demo isn't available right now. Sign up free to run the full version.", action="signup")
+        if limiter.check(f"demo_ip:{ip}", 1, 86400):
+            raise Reject(429, "Today's demo on this network has been used. Sign up free for 2 full runs with no waiting.", action="signup")
+        if limiter.check("demo:all", settings.demo_daily_limit, 86400):
+            raise Reject(429, "The demo is fully booked for today. Sign up free: new accounts get 2 full runs.", action="signup")
+        forget_old_demos()
+        demo_id = str(uuid.uuid4())
+        job = Job(demo_id, demo_work(demo_id, target, goal, purpose, ip), "demo", f"demo:{demo_id}", record=False)
+        with _demos_lock:
+            demos[demo_id] = {"job": job, "target": target, "goal": goal, "purpose": purpose, "created": time.time()}
+        record_event("demo_used", purpose)
+        self._json(200, {"id": demo_id})
+
+    def _demo_snapshot(self, url):
+        demo_id = url.path.rsplit("/", 1)[-1]
+        with _demos_lock:
+            demo = demos.get(demo_id) if UUID.match(demo_id) else None
+        if not demo:
+            raise Reject(404, "That demo has expired. Start another, or sign up free.")
+        limit_or_reject("poll", demo_id)
+        try:
+            after = max(0, int(parse_qs(url.query).get("after", ["0"])[0]))
+        except ValueError:
+            raise Reject(400, "after must be a whole number.")
+        snap = demo["job"].snapshot(after)
+        teaser = demo_teaser(snap["result"]) if snap["status"] == "done" else None
+        self._json(200, {"status": snap["status"], "events": snap["events"], "total": snap["total"], "error": snap["error"], "teaser": teaser})
+
+    def _claim_demo(self, user):
+        demo_id = str(self._read_json(limit=4096).get("id") or "")
+        if not UUID.match(demo_id):
+            raise Reject(400, "That isn't a demo id.")
+        with _demos_lock:
+            demo = demos.get(demo_id)
+            if demo and demo.get("result") and demo.get("claimed_by") in (None, user["id"]):
+                demo["claimed_by"] = user["id"]
+                found = {"target": demo["target"], "goal": demo["goal"], "purpose": demo["purpose"], **demo["result"]}
+            else:
+                found = None
+        if found is None and demo is None:  # not in this process (a deploy in between): the database has it
+            row = supa.rpc("sociai_claim_demo", p_id=demo_id, p_user=user["id"])
+            if row:
+                found = {"target": row["target"], "goal": row["goal"], "purpose": row.get("purpose") or "research",
+                         "dossier": row["dossier"], "draft": row["draft"]}
+        if found is None:
+            raise Reject(404, "That demo isn't available any more.")
+        record_event("demo_claimed", found["purpose"])
+        self._json(200, {"demo": {**found, "category": DEMO_PURPOSES.get(found["purpose"], DEMO_PURPOSES["research"])[0]}})
+
+    def _funnel(self, url):
+        if not settings.admin_token:
+            raise Reject(404, "Not found.")
+        auth = self.headers.get("Authorization", "")
+        given = auth[7:].strip() if auth.lower().startswith("bearer ") else parse_qs(url.query).get("token", [""])[0]
+        if not given or not hmac.compare_digest(given, settings.admin_token):
+            raise Reject(401, "Wrong token.")
+        rows = supa.rpc("sociai_funnel", p_days=14) if supa else []
+        if parse_qs(url.query).get("format", [""])[0] == "json":
+            return self._json(200, {"days": rows, "today_in_memory": {k: v for k, v in _events.items() if k != "day"}})
+        self._send(200, funnel_text(rows).encode(), "text/plain; charset=utf-8")
 
     def _billing(self):
         if not billing:
@@ -989,7 +1227,8 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header(name, value)
 
     def log_message(self, fmt, *args):
-        if not self.path.startswith(("/api/jobs/", "/healthz")):  # polling and health checks would drown the log
+        # Polling and health checks would drown the log; the funnel URL may carry the admin token.
+        if not self.path.startswith(("/api/jobs/", "/api/demo/", "/healthz", "/api/funnel")):
             super().log_message(fmt, *args)
 
 

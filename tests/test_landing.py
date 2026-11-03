@@ -50,9 +50,9 @@ class Page(unittest.TestCase):
     def test_first_screen_in_order(self):
         body = self.html.split("<main", 1)[1]
         order = [body.index(s) for s in (
-            'id="hero-title"', 'class="hero-sub"', 'href="/app?mode=signup" data-app data-cta="hero">Try 2 free drafts',
+            'id="hero-title"', 'class="hero-sub"', 'id="demo"', 'id="d-target"', 'data-cta="demo">Try it free',
             "No credit card needed", "Already have an account?", 'href="/app?mode=login" data-app>Log in',
-            "Built by Stanford &amp; Berkeley students", 'id="sample"', 'id="how"', 'id="faq"', 'id="pricing"')]
+            "Built by Stanford &amp; Berkeley students", 'id="demo-out"', 'id="sample"', 'id="how"', 'id="who"', 'id="faq"', 'id="pricing"')]
         self.assertEqual(order, sorted(order))
         title = re.search(r'<h1 class="display" id="hero-title">(.*?)</h1>', body).group(1)
         self.assertLessEqual(len(re.sub(r"<[^>]+>", "", title).split()), 8)
@@ -81,6 +81,9 @@ class Page(unittest.TestCase):
         self.assertIn('"mode"', script, "the page's own ?mode= never overrides a link's")
         self.assertIn('"/api/event"', script)
         self.assertIn('"landing_view"', script)
+        self.assertIn('u.searchParams.set("demo", id)', script, "the sign-up link after a demo carries the demo id")
+        self.assertIn("Does it sound like AI?", self.html)
+        self.assertIn("Is it free?", self.html)
 
 
 class Events(unittest.TestCase):
@@ -119,7 +122,7 @@ class Events(unittest.TestCase):
         with contextlib.redirect_stdout(io.StringIO()) as out:
             web.record_event("cta_click", "hero", "ig", True)
         line = out.getvalue()
-        self.assertIn("[event] cta_click where=hero utm_source=ig fbclid=yes | today views=2 clicks=1 ctr=50.0%", line)
+        self.assertIn("[event] cta_click where=hero utm_source=ig fbclid=yes | today landing_view=2 cta_click=1 signup_rate=0.0%", line)
 
     def test_no_sign_in_needed_and_values_are_cleaned_before_logging(self):
         status, _, printed = self.post({"name": "cta_click", "where": "hero<script>", "utm_source": "someone@example.com ref", "fbclid": "yes"})

@@ -147,6 +147,41 @@ src="https://www.facebook.com/tr?id=1808625520381378&ev=PageView&noscript=1"
     .cta-login { grid-column: 2; }
   }
 
+  /* The demo form in the hero, and its result */
+  .demo { margin-top: 22px; display: grid; gap: 10px; max-width: 520px; }
+  .input { width: 100%; height: 50px; padding: 0 14px; border: 1px solid var(--rule); border-radius: var(--r2); background: var(--sheet); color: var(--ink); font: 400 16px/1 var(--sans); }
+  .input::placeholder { color: var(--ink-3); }
+  .input:focus { outline: none; border-color: var(--thread); box-shadow: 0 0 0 3px color-mix(in oklab, var(--thread) 18%, transparent); }
+  .chips { display: flex; flex-wrap: wrap; gap: 8px; }
+  .chip { position: relative; }
+  .chip input { position: absolute; opacity: 0; width: 1px; height: 1px; }
+  .chip span { display: inline-flex; align-items: center; gap: 7px; height: 36px; padding: 0 12px; border: 1px solid var(--rule); border-radius: 999px; background: var(--sheet); font: 500 13.5px/1 var(--sans); color: var(--ink-2); cursor: pointer; }
+  .chip span::before { content: ""; width: 8px; height: 8px; border-radius: 50%; border: 1px solid var(--ink-3); }
+  .chip input:checked + span { border-color: var(--ink); color: var(--ink); }
+  .chip input:checked + span::before { background: var(--thread); border-color: var(--thread); }
+  .chip input:focus-visible + span { outline: 2px solid var(--thread); outline-offset: 2px; }
+  .demo .btn-big { width: 100%; }
+  .demo .btn-big:disabled { opacity: .6; cursor: wait; }
+  .field-error { margin: 0; font-size: 13.5px; color: #a5462f; }
+  .demo-out { margin: 8px 0 36px; display: grid; gap: 16px; max-width: 640px; }
+  .d-log { list-style: none; margin: 0; padding: 12px 16px 16px; display: grid; gap: 8px; font: 400 14px/1.4 var(--mono); color: var(--ink-2); }
+  .d-log li { display: flex; gap: 10px; }
+  .d-log li::before { content: "·"; color: var(--thread); }
+  .d-log li.is-now::before { content: "›"; }
+  .d-wait { padding: 0 16px 14px; margin: 0; font-size: 13px; color: var(--ink-3); }
+  .d-card { padding: 16px; display: grid; gap: 8px; }
+  .d-card h3 { margin: 0; font: 500 21px/1.2 var(--serif); }
+  .d-card .headline { margin: 0; font-size: 14px; color: var(--ink-2); }
+  .d-card .summary { margin: 4px 0 0; font: 400 16px/1.55 var(--serif); }
+  .d-facts { margin: 4px 0 0; padding-left: 18px; font-size: 14.5px; line-height: 1.5; color: var(--ink-2); }
+  .d-facts li { margin-top: 4px; }
+  .d-facts .src { font: 500 11px/1 var(--mono); color: var(--ink-3); margin-left: 6px; }
+  .d-mail { position: relative; }
+  .d-blur { filter: blur(5px); user-select: none; pointer-events: none; color: var(--ink-3); }
+  .d-lock { position: absolute; left: 0; right: 0; bottom: 0; padding: 60px 16px 20px; background: linear-gradient(to bottom, transparent, var(--sheet) 45%); display: grid; gap: 8px; justify-items: start; }
+  .d-lock .btn-big { width: 100%; }
+  .d-lock p { margin: 0; font-size: 13px; color: var(--ink-3); }
+
   /* Before / after: two sample emails to the same (made-up) professor. */
   .band { border-top: 1px solid var(--rule-2); padding: 44px 0; }
   .band-head { max-width: 640px; }
@@ -183,6 +218,10 @@ src="https://www.facebook.com/tr?id=1808625520381378&ev=PageView&noscript=1"
   .steps .n { font: 400 28px/1 var(--serif); color: var(--thread-ink); font-variant-numeric: tabular-nums; }
   .steps p { margin: 4px 0 0; font-size: 15px; line-height: 1.55; color: var(--ink-2); }
   .shaped { margin: 22px 0 0; padding-left: 16px; border-left: 2px solid var(--thread); font: italic 400 17px/1.45 var(--serif); color: var(--ink); max-width: 36ch; }
+  .who { list-style: none; margin: 24px 0 0; padding: 0; display: grid; gap: 14px; }
+  .who li { background: var(--sheet); border: 1px solid var(--rule-2); border-radius: var(--r2); padding: 16px 18px; }
+  .who p { margin: 6px 0 0; font-size: 14.5px; line-height: 1.55; color: var(--ink-2); }
+  @media (min-width: 760px) { .who { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 24px; } }
   @media (min-width: 760px) { .steps { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 32px; } .steps li { grid-template-columns: 1fr; } }
 
   .faq { max-width: 720px; margin-top: 20px; border-top: 1px solid var(--rule); }
@@ -242,15 +281,24 @@ src="https://www.facebook.com/tr?id=1808625520381378&ev=PageView&noscript=1"
 <main id="main" tabindex="-1">
   <div class="page">
     <section class="hero" id="hero" aria-labelledby="hero-title">
-      <h1 class="display" id="hero-title">Cold emails that <em>actually get replies</em></h1>
-      <p class="hero-sub">Sociai researches the person you're writing to, then drafts the email in your own voice. A few minutes, not an evening.</p>
-      <div class="cta">
-        <a class="btn btn-primary btn-big" href="/app?mode=signup" data-app data-cta="hero">Try 2 free drafts <span class="arrow" aria-hidden="true">→</span></a>
-        <p class="cta-note">No credit card needed</p>
-        <p class="cta-login">Already have an account? <a class="link" href="/app?mode=login" data-app>Log in</a></p>
-      </div>
+      <h1 class="display" id="hero-title">Cold emails professors <em>actually reply to</em></h1>
+      <p class="hero-sub">Sociai reads their real pages, then drafts the email in your voice. Try it on someone now:</p>
+      <form class="demo" id="demo" novalidate>
+        <label class="vh" for="d-target">Who are you writing to?</label>
+        <input class="input" id="d-target" name="target" maxlength="200" autocomplete="off" autocapitalize="words" placeholder="Prof. Fei-Fei Li, Stanford" required>
+        <div class="chips" role="radiogroup" aria-label="What you're asking for">
+          <label class="chip"><input type="radio" name="purpose" value="research" checked><span>Research position</span></label>
+          <label class="chip"><input type="radio" name="purpose" value="job"><span>Internship or job</span></label>
+          <label class="chip"><input type="radio" name="purpose" value="advice"><span>Coffee chat</span></label>
+        </div>
+        <button type="submit" class="btn btn-primary btn-big" data-cta="demo">Try it free <span class="arrow" aria-hidden="true">→</span></button>
+        <p class="field-error" id="d-err" role="alert" hidden></p>
+      </form>
+      <p class="cta-note">No credit card needed · <a class="link" href="/app?mode=signup" data-app data-cta="hero_signup">or skip the demo and sign up</a></p>
+      <p class="cta-login">Already have an account? <a class="link" href="/app?mode=login" data-app>Log in</a></p>
       <p class="trust">Built by Stanford &amp; Berkeley students</p>
     </section>
+    <section class="demo-out" id="demo-out" aria-live="polite" hidden></section>
   </div>
 
   <section class="band" id="sample" aria-labelledby="sample-title">
@@ -312,11 +360,31 @@ src="https://www.facebook.com/tr?id=1808625520381378&ev=PageView&noscript=1"
     </div>
   </section>
 
+  <section class="band" id="who" aria-labelledby="who-title">
+    <div class="page">
+      <p class="label">Who it's for</p>
+      <h2 class="h2" id="who-title">The emails a template can't write</h2>
+      <ul class="who">
+        <li><h3 class="h3">Research positions</h3><p>Show a professor you've read their work, not just their faculty page.</p></li>
+        <li><h3 class="h3">Internships and referrals</h3><p>A short note to a recruiter or engineer that knows what the team ships.</p></li>
+        <li><h3 class="h3">Alumni coffee chats</h3><p>Real common ground with someone a few years ahead, beyond the same school.</p></li>
+      </ul>
+    </div>
+  </section>
+
   <section class="band" id="faq" aria-labelledby="faq-title">
     <div class="page">
       <p class="label">FAQ</p>
       <h2 class="h2" id="faq-title">Questions</h2>
       <div class="faq">
+        <details>
+          <summary>Does it sound like AI?</summary>
+          <p>It's built not to. Drafts follow your own writing samples and background, mention one or two specific things the person actually did, and leave a [placeholder] for anything Sociai doesn't know instead of making it up. You edit every line before it goes anywhere.</p>
+        </details>
+        <details>
+          <summary>Is it free?</summary>
+          <p>To start, yes: every new account gets 2 credits, no card needed. After that a 20-credit pack is $14.99 and the monthly plan is 30 credits for $11.99.</p>
+        </details>
         <details>
           <summary>Does Sociai send emails for me?</summary>
           <p>No. Sociai only drafts. You copy the message and send it from your own email or account. It never connects to your inbox.</p>
@@ -327,7 +395,7 @@ src="https://www.facebook.com/tr?id=1808625520381378&ev=PageView&noscript=1"
         </details>
         <details>
           <summary>What's a credit?</summary>
-          <p>One credit covers a research run on one person plus up to 3 drafts for them (a revision counts as a draft). New accounts start with 2 credits. If a research run doesn't finish, you get the credit back.</p>
+          <p>One credit covers a research run on one person plus up to 3 drafts for them (a revision counts as a draft). If a research run doesn't finish, you get the credit back.</p>
         </details>
       </div>
     </div>
@@ -393,7 +461,7 @@ src="https://www.facebook.com/tr?id=1808625520381378&ev=PageView&noscript=1"
   // Ad continuity: utm_* and fbclid from the ad land here, so every link into the app carries them
   // on (the app ignores them, but Meta's attribution and your own logs don't).
   const params = new URLSearchParams(location.search);
-  for (const k of ["auth", "code", "token_hash", "type", "error", "error_code", "error_description", "checkout", "mode"]) params.delete(k);
+  for (const k of ["auth", "code", "token_hash", "type", "error", "error_code", "error_description", "checkout", "mode", "demo"]) params.delete(k);
   if ([...params.keys()].length) {
     for (const a of document.querySelectorAll("a[data-app]")) {
       const u = new URL(a.getAttribute("href"), location.origin);
@@ -413,6 +481,75 @@ src="https://www.facebook.com/tr?id=1808625520381378&ev=PageView&noscript=1"
   };
   send("landing_view", "");
   document.addEventListener("click", (e) => { const a = e.target.closest("a[data-cta]"); if (a) send("cta_click", a.dataset.cta); });
+
+  // The demo: research + the first lines of a draft for a person the visitor names. The result
+  // stays on the server; the sign-up link carries the demo id so the full draft is waiting in
+  // the new account.
+  const form = document.getElementById("demo"), out = document.getElementById("demo-out");
+  const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
+  const domain = (u) => { try { return new URL(u).hostname.replace(/^www\./, ""); } catch { return ""; } };
+  const mmss = (s) => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, "0")}`;
+  const signupHref = (id) => {
+    const u = new URL(document.querySelector("a[data-cta='hero_signup']").getAttribute("href"), location.origin);
+    if (id) u.searchParams.set("demo", id);
+    return u.pathname + u.search;
+  };
+  const blurred = (n) => { const w = []; for (let i = 0; i < Math.min(n, 70); i++) w.push("█".repeat(2 + ((i * 7) % 6))); return w.join(" "); };
+  const lockHTML = (id, text) => `<div class="d-lock"><a class="btn btn-primary btn-big" href="${esc(signupHref(id))}" data-cta="demo_signup">Sign up free to see the full email</a><p>${esc(text)}</p></div>`;
+  const show = (html) => { out.hidden = false; out.innerHTML = html; };
+  const fail = (message, id) => show(`<div class="mail"><div class="d-card"><p class="field-error">${esc(message)}</p></div>${lockHTML(id, "2 free drafts when you sign up. No credit card.")}</div>`);
+  let timer = null;
+
+  const render = (t, id) => {
+    const facts = t.facts.map((f) => `<li>${esc(f.fact)}${domain(f.source) ? `<span class="src">${esc(domain(f.source))}</span>` : ""}</li>`).join("");
+    show(`<div class="mail d-card">
+        <p class="label">What it found${t.sources ? ` · ${t.sources} source${t.sources === 1 ? "" : "s"}` : ""}</p>
+        <h3>${esc(t.name || "Research")}</h3>${t.headline ? `<p class="headline">${esc(t.headline)}</p>` : ""}
+        <p class="summary">${esc(t.summary)}</p>${facts ? `<ul class="d-facts">${facts}</ul>` : ""}
+      </div>
+      <div class="mail d-mail">
+        <div class="mail-top"><span class="tag" style="color:var(--thread-ink)">Your draft · in a plain voice</span><span class="label">${t.words} words</span></div>
+        <dl class="mail-fields"><div><dt>Subject</dt><dd>${esc(t.subject)}</dd></div></dl>
+        <div class="mail-body">${t.greeting ? `<p>${esc(t.greeting)}</p>` : ""}<p>${esc(t.opening)}</p><p class="d-blur" aria-hidden="true">${blurred(t.hidden_words)}</p><p class="d-blur" aria-hidden="true">${blurred(Math.max(6, Math.min(t.hidden_words, 14)))}</p></div>
+        ${lockHTML(id, "2 free drafts, with your own writing samples and background. No credit card.")}
+      </div>`);
+  };
+
+  const poll = (id, started, seen) => {
+    fetch(`/api/demo/${id}?after=${seen}`).then((r) => r.json()).then((d) => {
+      const log = document.getElementById("d-log");
+      for (const e of d.events || []) {
+        const line = { search: () => `Searching: ${e.query}`, fetch: () => `Reading ${domain(e.url)}`, read: () => `Read ${e.title || domain(e.url)}`,
+          read_failed: () => `Couldn't open ${domain(e.url)}`, composing: () => "Writing up what it found", drafting: () => "Drafting the email" }[e.kind]?.();
+        if (line && log) { log.querySelector(".is-now")?.classList.remove("is-now"); log.insertAdjacentHTML("beforeend", `<li class="is-now">${esc(line)}</li>`); }
+      }
+      seen = d.total ?? seen;
+      if (d.status === "done" && d.teaser) { clearInterval(timer); return render(d.teaser, id); }
+      if (d.status === "error" || d.error) { clearInterval(timer); return fail(d.error || "The demo didn't finish. Sign up free and run the full version.", id); }
+      const el = document.getElementById("d-elapsed");
+      if (el) el.textContent = mmss((Date.now() - started) / 1000);
+      timer = setTimeout(() => poll(id, started, seen), 1200);
+    }).catch(() => { timer = setTimeout(() => poll(id, started, seen), 2500); });
+  };
+
+  form?.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const target = form.target.value.trim(), purpose = form.purpose.value, err = document.getElementById("d-err");
+    err.hidden = true;
+    if (target.length < 3) { err.textContent = "Name the person, with a little context: e.g. Prof. Fei-Fei Li, Stanford."; err.hidden = false; form.target.focus(); return; }
+    const btn = form.querySelector("button");
+    btn.disabled = true;
+    show(`<div class="mail"><div class="mail-top"><span class="tag" style="color:var(--thread-ink)">Researching ${esc(target)}</span><span class="label" id="d-elapsed">0:00</span></div>
+      <ol class="d-log" id="d-log"><li class="is-now">Starting the search</li></ol><p class="d-wait">Usually 30 to 90 seconds. It reads their real pages, so it takes a moment.</p></div>`);
+    out.scrollIntoView({ behavior: "smooth", block: "start" });
+    try {
+      const res = await fetch("/api/demo", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ target, purpose }) });
+      const d = await res.json();
+      if (!res.ok || !d.id) { btn.disabled = false; return fail(d.error || "The demo isn't available right now.", null); }
+      try { localStorage.setItem("sociai.demo", JSON.stringify({ id: d.id, target, at: Date.now() })); } catch {}
+      poll(d.id, Date.now(), 0);
+    } catch { btn.disabled = false; fail("Couldn't reach Sociai. Check your connection and try again.", null); }
+  });
 
   // The sticky bar appears once the hero's button has scrolled out of view.
   const sticky = document.getElementById("sticky"), hero = document.getElementById("hero");

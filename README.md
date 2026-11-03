@@ -113,12 +113,22 @@ A key from the other mode (or an unknown mode) turns payments off, and the start
 
 **Error monitoring.** Set `SENTRY_DSN` to send server errors to Sentry; without it nothing is loaded or sent. Events carry the error and stack trace only: no request bodies, cookies, auth headers or local variables, and any field that could hold resume text, writing samples or user input is removed, and anything that looks like a key or token is masked (`sociai/monitoring.py`).
 
+## Landing-page demo and the sign-up funnel
+
+**The demo.** The landing page's hero is a form: name a person and pick what you're asking for, and the server researches them and writes a draft (`POST /api/demo`), showing the steps live and then a teaser: the summary, two facts, the subject and the first two sentences of the email. The rest stays on the server. The sign-up link under the teaser carries the demo id, and the new account claims it on its first visit (`POST /api/demo/claim`): the full research and draft become its first project, open at the draft. Demos run on `SOCIAI_DEMO_MODEL` (Haiku by default) with 2 searches and 3 page reads, cost a few cents each, use no credits and create no job rows. Limits: one per IP per day (the message points to sign-up), `SOCIAI_DEMO_DAILY_LIMIT` across everyone, and the public per-IP rate limit. Results are kept in memory for a day and in the `demo_runs` table (only a hash of the IP) for 30 days, so a claim still works after a deploy. Migration: `supabase/migrations/20261107000000_demo_and_funnel.sql`.
+
+**The funnel.** Steps are counted per UTC day in the `events` table and printed to the log: `landing_view`, `cta_click`, `demo_used`, `signup_started`, `signup_done`, `first_draft`, `checkout` (plus `demo_claimed`). The browser may report its own steps through `POST /api/event`; the server records the rest itself. With `SOCIAI_ADMIN_TOKEN` set, `GET /api/funnel?token=...` prints the last 14 days as a table with each step as a share of landing views (`&format=json` for data). Nothing per visitor is stored: only counts, and for new accounts their `utm_source`/`utm_medium`/`utm_campaign` and whether an `fbclid` was present (`signup_attribution`, written once per user from the values the ad link carried into `/app`).
+
+**First run.** New accounts land on the desk with a worked example in the brief (one tap to a first research run) instead of the old three-step setup; the profile is nudged from the desk afterwards. When credits reach zero the desk shows a short "Get more credits" note.
+
+**Why turn "Confirm email" off.** Most ad visitors arrive in Instagram's in-app browser. With confirmations on, they must leave for their mail app, and the link usually opens in a different browser, where the sign-in code can't be exchanged, so they're asked to sign in again before they've seen anything. With it off, sign-up is one screen and the demo draft is waiting immediately. Abuse is already limited by the disposable-domain list, the per-IP account cap and the 2-credit allowance; password reset still verifies the address when it matters. Supabase: Authentication → Providers → Email → "Confirm email" off.
+
 ## Supabase setup
 
 1. **Create a project** at [supabase.com/dashboard](https://supabase.com/dashboard) (**New project**).
 2. **Email and password sign-in**: **Authentication > Sign In / Providers > Email** (click **Email** to open its settings):
    - **Enable Email provider**: on. This is what allows email + password sign-in.
-   - **Confirm email**: on.
+   - **Confirm email**: off is the better choice for ad traffic (see "Landing-page demo and the sign-up funnel" below); the app and server work either way.
    - **Minimum password length**: `10`.
    - **Password requirements**: leave at "No required characters" (the sign-up screen shows a strength hint instead), or tighten it if you like.
    - **Save**. Under **User Signups** on the same page, **Allow new users to sign up** must be on.
@@ -214,6 +224,9 @@ All settings are environment variables, or lines in `.env` (see `.env.example`).
 | `SUPABASE_ANON_KEY` | (required) | Publishable (anon) key. Sent to the browser for sign-in. |
 | `SUPABASE_SERVICE_ROLE_KEY` | (required) | Secret (service_role) key. Server only: it changes credits through the database functions. |
 | `SOCIAI_GLOBAL_DAILY_LIMIT` | 100 | Research + draft jobs per UTC day across all users. |
+| `SOCIAI_DEMO_MODEL` | `claude-haiku-5-5` | Model for the landing-page demo. |
+| `SOCIAI_DEMO_DAILY_LIMIT` | 100 | Demos per UTC day across every visitor (a spend cap; one per IP per day on top). |
+| `SOCIAI_ADMIN_TOKEN` | (unset) | A long random string. Unlocks `GET /api/funnel`; unset, that page is off. |
 | `SOCIAI_MAX_ACCOUNTS_PER_IP` | 3 | New accounts per IP per day before the next is blocked. Campus networks share one IP. |
 | `SOCIAI_RESEARCH_MODEL`, `SOCIAI_DRAFT_MODEL` | `claude-sonnet-5-5` | Model per step. See "Models and cost" above. |
 | `SOCIAI_STRIPE_MODE` | `test` | `test` or `live`. The secret key and webhook events must be from this mode. |

@@ -45,11 +45,14 @@ def _env_limit(name, default):
     return max(1, value)
 
 
-def web_tools(model, searches, fetches):
-    """The research tools with these per-run limits (at least 1 of each)."""
+def web_tools(model, searches, fetches, fetch_tokens=None):
+    """The research tools with these per-run limits (at least 1 of each). fetch_tokens caps how
+    much of each fetched page the model gets to read (unset: the tool's own limit)."""
     types = BASIC_WEB_TOOL_TYPES if _is_haiku(model) else WEB_TOOL_TYPES
-    return [{"type": types["web_search"], "name": "web_search", "max_uses": max(1, searches)},
-            {"type": types["web_fetch"], "name": "web_fetch", "max_uses": max(1, fetches)}]
+    fetch = {"type": types["web_fetch"], "name": "web_fetch", "max_uses": max(1, fetches)}
+    if fetch_tokens:
+        fetch["max_content_tokens"] = fetch_tokens
+    return [{"type": types["web_search"], "name": "web_search", "max_uses": max(1, searches)}, fetch]
 
 # Estimated prices in USD per million tokens: input, output, cache read.
 # Cache writes cost 1.25x input. Web fetch adds no fee beyond the tokens it reads.
@@ -443,10 +446,14 @@ class Engine:
         self.draft_model = draft_model or model or os.environ.get("SOCIAI_DRAFT_MODEL") or DEFAULT_MODEL
         self.max_searches = _env_limit("SOCIAI_MAX_SEARCHES", DEFAULT_MAX_SEARCHES)
         self.max_fetches = _env_limit("SOCIAI_MAX_FETCHES", DEFAULT_MAX_FETCHES)
+        self.timeout: float | None = None  # seconds per API call (the SDK's default is 10 minutes); the demo sets a short one
+        self.fetch_tokens: int | None = None  # cap per fetched page; the demo keeps its runs small and cheap
 
     def _create(self, model, usage=None, on_block=None, **kwargs):
         """One API call. With on_block, stream it and report each content block as it completes."""
         params = dict(model=model, **kwargs)
+        if self.timeout:
+            params["timeout"] = self.timeout
         if not _is_haiku(model):
             params.update(betas=[FALLBACK_BETA], fallbacks="default")
         if on_block is None:
@@ -489,7 +496,7 @@ class Engine:
                 max_tokens=16000,
                 system=RESEARCH_SYSTEM,
                 tools=web_tools(self.research_model, self.max_searches - used["web_search"],
-                                self.max_fetches - used["web_fetch"]),
+                                self.max_fetches - used["web_fetch"], self.fetch_tokens),
                 output_config={"effort": "medium", "format": {"type": "json_schema", "schema": DOSSIER_SCHEMA}},
                 messages=messages,
             )
