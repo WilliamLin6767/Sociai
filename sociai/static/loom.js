@@ -153,6 +153,7 @@ export class Loom {
     if (!w || !h) return;
     this.svg.setAttribute("viewBox", `0 0 ${w} ${h}`);
     this.compact = w < 540;
+    this.w = w;
     this.svg.classList.toggle("is-compact", this.compact);
     this.cx = w / 2;
     this.cy = h / 2;
@@ -181,7 +182,14 @@ export class Loom {
     const from = this.pos(item.parent);
     item.thread.setAttribute("d", curve(from, at, item.angle));
     if (item.link) item.link.setAttribute("d", curve({ x: this.cx, y: this.cy }, at, item.angle + 1));
-    const right = Math.cos(item.angle) >= 0;
+    // On phones, query labels are cut shorter and point away from the centre only when that
+    // keeps them inside the map.
+    const label = this.compact && item.type === "query" ? trunc(item.label, 18) : item.label;
+    if (item.text.textContent !== label) item.text.textContent = label;
+    const approx = label.length * 6.5 + 14;
+    let right = Math.cos(item.angle) >= 0;
+    if (right && at.x + approx > this.w) right = false;
+    else if (!right && at.x - approx < 0) right = true;
     item.text.setAttribute("x", at.x + (right ? 11 : -11));
     item.text.setAttribute("y", at.y + 4);
     item.text.setAttribute("text-anchor", right ? "start" : "end");

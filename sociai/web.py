@@ -43,14 +43,17 @@ pick a job back up after a refresh. Messages are never sent on the user's behalf
 Settings come from environment variables or a local .env file (see .env.example).
 """
 
+import base64
 import hashlib
 import json
+import math
 import mimetypes
 import os
 import re
 import threading
 import time
 import traceback
+from collections import deque
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -69,7 +72,7 @@ from .supabase import Supabase, SupabaseError, SupabaseRefused
 STATIC = Path(__file__).parent / "static"
 # Windows can map these from the registry (e.g. .js -> text/plain), which breaks modules.
 for ext, kind in ((".js", "text/javascript"), (".css", "text/css"), (".svg", "image/svg+xml"),
-                  (".txt", "text/plain"), (".xml", "application/xml")):
+                  (".txt", "text/plain"), (".xml", "application/xml"), (".ico", "image/x-icon")):
     mimetypes.add_type(kind, ext)
 JOB_TTL = 3600     # seconds a finished job is kept for a refreshed page to collect
 MAX_BODY = 200 * 1024
@@ -86,7 +89,8 @@ CONTACTS = "outreach_contacts"
 CONTACT_PATH = re.compile(r"^/api/contacts/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$")
 MAX_CONTACTS = 2000  # the database caps each account at this many
 PAGES = {"/": "landing.html", "/app": "app.html", "/privacy": "privacy.html", "/terms": "terms.html"}
-REDIRECTS = {"/app/": "/app", "/index.html": "/"}
+REDIRECTS = {"/app/": "/app", "/index.html": "/", "/landing.html": "/", "/app.html": "/app",
+             "/privacy.html": "/privacy", "/terms.html": "/terms"}
 # Cloudflare (in front of the site) turns static files' Cache-Control into a 4-hour browser cache, so
 # after a deploy a browser could pair new HTML with an old stylesheet. Pages and modules therefore
 # link their CSS and JS as /file?v=<hash of all of them>: every deploy that changes one changes all
@@ -98,6 +102,99 @@ IMMUTABLE = "public, max-age=31536000, immutable"
 # Links that belong to the app but may still arrive at / : email links sent before the app moved
 # to /app (or sent to Supabase's Site URL) and Stripe Checkout sessions started before the move.
 APP_QUERY = ("auth", "code", "token_hash", "error_description", "checkout")
+
+# ───────── Security headers ─────────
+#
+# Pages get a Content-Security-Policy that names every origin they load from. Inline scripts (the
+# theme switch and the Meta Pixel on the public pages) are allowed by hash, computed from the files
+# here, so no 'unsafe-inline' script is ever allowed. Adding a third-party script means adding its
+# origin to csp() as well.
+INLINE_SCRIPT = re.compile(r"<script(?![^>]*\ssrc=)[^>]*>(.*?)</script>", re.S | re.I)
+
+
+def inline_script_hashes(html: str) -> list[str]:
+    return [f"'sha256-{base64.b64encode(hashlib.sha256(s.encode()).digest()).decode()}'" for s in INLINE_SCRIPT.findall(html)]
+
+
+PAGE_HASHES = {name: inline_script_hashes((STATIC / name).read_text(encoding="utf-8")) for name in PAGES.values()}
+SECURITY_HEADERS = {
+    "X-Content-Type-Options": "nosniff",
+    "X-Frame-Options": "DENY",
+    "Referrer-Policy": "strict-origin-when-cross-origin",
+    "Permissions-Policy": "camera=(), microphone=(), geolocation=(), payment=(), usb=()",
+}
+HSTS = "max-age=31536000; includeSubDomains"
+NO_CONTENT_CSP = "default-src 'none'; frame-ancestors 'none'"
+
+
+def csp(page: str) -> str:
+    """The Content-Security-Policy for one of the HTML pages."""
+    scripts = ["'self'", "https://cdn.jsdelivr.net", "https://connect.facebook.net", *PAGE_HASHES.get(page, [])]
+    connect = ["'self'", settings.supabase_url, "https://www.facebook.com", "https://connect.facebook.net"]
+    return "; ".join([
+        "default-src 'self'",
+        "script-src " + " ".join(scripts),
+        "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
+        "font-src 'self' https://fonts.gstatic.com",
+        "img-src 'self' data: https://www.facebook.com",
+        "connect-src " + " ".join(c for c in connect if c),
+        "frame-src https://www.facebook.com",
+        "frame-ancestors 'none'", "base-uri 'none'", "object-src 'none'", "form-action 'self'",
+    ])
+
+
+# ───────── Rate limits ─────────
+#
+# Sliding windows per key, in this process's memory (one server instance). The budgets are per
+# minute. Credits and the database's own caps bound the real cost of research and drafts; these
+# limits keep one connection from hammering Supabase (token checks), Stripe or the parsers.
+RATE = {
+    "api": 600,      # every /api call except job polling, per IP (a campus network shares one)
+    "poll": 300,     # /api/jobs/<id> polls, per user (two running jobs poll about 130 times a minute)
+    "verify": 60,    # access tokens checked with Supabase, per IP (valid ones are cached for a minute)
+    "public": 30,    # /api/check-email, per IP
+    "job": 10,       # research and draft starts, per user
+    "billing": 10,   # checkout and portal sessions, per user
+    "upload": 10,    # resume uploads, per user
+    "delete": 5,     # account deletion attempts, per user
+}
+RATE_WINDOW = 60
+
+
+class Limiter:
+    def __init__(self):
+        self._hits: dict[str, deque] = {}
+        self._lock = threading.Lock()
+        self._swept = 0.0
+
+    def check(self, key: str, limit: int, window: int = RATE_WINDOW) -> float:
+        """0 if this request is allowed (and counted); otherwise the seconds until one would be."""
+        now = time.time()
+        with self._lock:
+            if now - self._swept > window:  # drop keys that went quiet
+                self._swept = now
+                for k in [k for k, q in self._hits.items() if not q or q[-1] < now - window]:
+                    del self._hits[k]
+            q = self._hits.setdefault(key, deque())
+            while q and q[0] <= now - window:
+                q.popleft()
+            if len(q) >= limit:
+                return q[0] + window - now
+            q.append(now)
+            return 0.0
+
+    def reset(self):
+        with self._lock:
+            self._hits.clear()
+
+
+limiter = Limiter()
+
+# Caps on what a research or draft request may carry into a prompt (the profile has the same ones).
+REQUEST_LIMITS = {"target": 500, "goal": 2000, "sender_background": 20000}
+MAX_SAMPLES, MAX_SAMPLE = 10, 20000
+MAX_DOSSIER = 100_000      # characters of JSON the browser may send back as the research
+MAX_REVISE_BODY, MAX_INSTRUCTION = 20000, 2000
 
 # Set by setup(): main() loads .env first; tests pass their own settings and engine.
 settings: Settings = Settings()
@@ -122,6 +219,13 @@ class Reject(Exception):
     def __init__(self, code, message, **extra):
         super().__init__(message)
         self.code, self.extra = code, extra
+
+
+def limit_or_reject(kind: str, who: str):
+    """Count one request of this kind for an IP or a user; 429 when its budget for the minute is spent."""
+    wait = limiter.check(f"{kind}:{who}", RATE[kind])
+    if wait:
+        raise Reject(429, "Too many requests from your connection. Wait a minute and try again.", retry_after=math.ceil(wait))
 
 
 SUPPORT_EMAIL = "supportsociai613@gmail.com"
@@ -158,24 +262,28 @@ START_ERRORS = {  # sociai_start_job error code -> (HTTP status, message)
 
 # ───────── Token checks ─────────
 
-_tokens: dict[str, tuple[dict, float]] = {}
+_tokens: dict[str, tuple[dict | None, float]] = {}
 _tokens_lock = threading.Lock()
+TOKEN_MISS_TTL = 10  # seconds an invalid token is remembered, so a stale session's polling doesn't ask Supabase each time
 
 
-def verify_token(token: str) -> dict | None:
-    """The Supabase user for an access token (cached briefly), or None if it isn't valid."""
+def verify_token(token: str, ip: str = "") -> dict | None:
+    """The Supabase user for an access token (cached briefly), or None if it isn't valid.
+    Uncached checks count against the IP's "verify" budget: made-up tokens would otherwise turn
+    into one Supabase call each, all from this server's address."""
     key = hashlib.sha256(token.encode()).hexdigest()
     now = time.time()
     with _tokens_lock:
         hit = _tokens.get(key)
         if hit and hit[1] > now:
             return hit[0]
+    if ip:
+        limit_or_reject("verify", ip)
     user = supa.get_user(token)
-    if user:
-        with _tokens_lock:
-            if len(_tokens) > 5000:
-                _tokens.clear()
-            _tokens[key] = (user, now + TOKEN_TTL)
+    with _tokens_lock:
+        if len(_tokens) > 5000:
+            _tokens.clear()
+        _tokens[key] = (user, now + (TOKEN_TTL if user else TOKEN_MISS_TTL))
     return user
 
 
@@ -237,20 +345,73 @@ def keep_job(job: Job):
     jobs[job.id] = job
 
 
-# These build the request objects up front, so a malformed body fails before any credit is spent.
+# These check the body and build the request objects up front, so a malformed or oversized
+# request fails with a 400 before any credit is spent or a job thread starts.
+def clean_request(raw) -> dict:
+    """The fields of OutreachRequest the browser may set, within the same caps as the profile."""
+    if not isinstance(raw, dict):
+        raise Reject(400, "The request needs a request object.")
+    out = {}
+    for field, limit in REQUEST_LIMITS.items():
+        value = raw.get(field) or ""
+        if not isinstance(value, str):
+            raise Reject(400, f"{field} must be text.")
+        if len(value) > limit:
+            raise Reject(400, f"{field} can be up to {limit:,} characters.")
+        out[field] = value
+    if not out["target"].strip() or not out["goal"].strip():
+        raise Reject(400, "Say who this is for and what you're asking for.")
+    samples = raw.get("writing_samples") or []
+    if not isinstance(samples, list) or not all(isinstance(s, str) for s in samples):
+        raise Reject(400, "writing_samples must be a list of texts.")
+    samples = [s.strip() for s in samples if s.strip()]
+    if len(samples) > MAX_SAMPLES:
+        raise Reject(400, f"You can use up to {MAX_SAMPLES} writing samples.")
+    if any(len(s) > MAX_SAMPLE for s in samples):
+        raise Reject(400, f"Each writing sample can be up to {MAX_SAMPLE:,} characters.")
+    channel = raw.get("channel") or "email"
+    if channel not in CHANNELS:
+        raise Reject(400, "Choose email, LinkedIn or direct message as the channel.")
+    words = raw.get("max_words", 160)
+    if isinstance(words, bool) or not isinstance(words, (int, float)) or words != int(words) or not 40 <= words <= 600:
+        raise Reject(400, "The word limit must be between 40 and 600.")
+    return {**out, "writing_samples": samples, "channel": channel, "max_words": int(words)}
+
+
+def clean_dossier(raw) -> Dossier:
+    """The research as the browser sends it back (with the sender's corrections), checked."""
+    if not isinstance(raw, dict):
+        raise Reject(400, "The request needs the research to draft from.")
+    if len(json.dumps(raw)) > MAX_DOSSIER:
+        raise Reject(400, "The research sent back is too large.")
+    try:
+        dossier = Dossier(**raw)
+        dossier.contact = clean_contact(dossier.contact)
+        dossier.as_text()  # every list has the shape the prompt builder expects
+    except (TypeError, KeyError, AttributeError, ValueError):
+        raise Reject(400, "The research is missing fields or has the wrong shape.")
+    return dossier
+
+
 def research_work(data, resume_text=""):
-    req = OutreachRequest(**data["request"])
+    req = OutreachRequest(**clean_request(data.get("request")))
     return lambda emit, usage: engine.research(req, on_progress=emit, usage=usage).__dict__
 
 
 def draft_work(data, resume_text=""):
     # The resume comes from the user's saved profile, never from the request body.
-    req = OutreachRequest(**{**data["request"], "resume_text": resume_text})
-    dossier = Dossier(**data["dossier"])
-    dossier.contact = clean_contact(dossier.contact)  # it comes back from the browser
+    req = OutreachRequest(**clean_request(data.get("request")), resume_text=resume_text)
+    dossier = clean_dossier(data.get("dossier"))
     revise = data.get("revise")
-    if revise is not None and not (isinstance(revise, dict) and {"body", "instruction"} <= revise.keys()):
-        raise ValueError("revise needs body and instruction")
+    if revise is not None:
+        if not (isinstance(revise, dict) and {"body", "instruction"} <= revise.keys()):
+            raise Reject(400, "A revision needs the current draft and an instruction.")
+        if not all(isinstance(revise.get(k, ""), str) for k in ("subject", "body", "instruction")):
+            raise Reject(400, "A revision's fields must be text.")
+        if len(revise["body"]) > MAX_REVISE_BODY or len(revise.get("subject", "")) > 500:
+            raise Reject(400, f"The draft to revise can be up to {MAX_REVISE_BODY:,} characters.")
+        if len(revise["instruction"]) > MAX_INSTRUCTION:
+            raise Reject(400, f"A revision request can be up to {MAX_INSTRUCTION:,} characters.")
     return lambda emit, usage: engine.draft(req, dossier, revise=revise, usage=usage).__dict__
 
 
@@ -261,11 +422,15 @@ JOB_ROUTES = {"/api/research": (research_work, "research"), "/api/draft": (draft
 
 class Handler(BaseHTTPRequestHandler):
     body_read = False  # set once this request's body has been read (one request per connection)
+    timeout = 30       # seconds of silence before a connection is dropped, so idle sockets can't pin threads
 
     def do_GET(self):
         url = urlparse(self.path)
         if url.path == "/healthz":
             return self._json(200, {"ok": True})
+        # Render and Cloudflare redirect plain HTTP themselves; this is the backstop behind them.
+        if settings.trust_proxy and self.headers.get("X-Forwarded-Proto") == "http" and self.headers.get("Host"):
+            return self._redirect(f"https://{self.headers['Host']}{self.path}", code=301)
         if url.path.startswith("/api/"):
             return self._api(self._get_api, url)
         if url.path in REDIRECTS or (url.path == "/" and any(k in parse_qs(url.query) for k in APP_QUERY)):
@@ -283,7 +448,10 @@ class Handler(BaseHTTPRequestHandler):
             body = (PAGE_ASSET if path.suffix == ".html" else MODULE_IMPORT).sub(
                 rf'\1?v={ASSET_VERSION}"', body.decode()).encode()
         versioned = path.suffix in (".css", ".js") and parse_qs(url.query).get("v") == [ASSET_VERSION]
-        self._send(200, body, ctype, cache=IMMUTABLE if versioned else "no-cache")
+        self._send(200, body, ctype, cache=IMMUTABLE if versioned else "no-cache", page=name if path.suffix == ".html" else None)
+
+    def do_HEAD(self):
+        self.do_GET()  # _send leaves the body out
 
     def do_POST(self):
         self._api(self._post_api, urlparse(self.path))
@@ -299,9 +467,12 @@ class Handler(BaseHTTPRequestHandler):
 
     def _api(self, handler, url):
         try:
+            if not url.path.startswith("/api/jobs/") and url.path != "/api/stripe/webhook":
+                limit_or_reject("api", self._client_ip())  # polls have a per-user budget; Stripe retries on 429
             handler(url)
         except Reject as r:
-            self._json(r.code, {"error": str(r), **r.extra})
+            headers = {"Retry-After": str(r.extra["retry_after"])} if "retry_after" in r.extra else None
+            self._json(r.code, {"error": str(r), **r.extra}, headers=headers)
         except SupabaseRefused as e:
             self._json(409, {"error": str(e)})
         except SupabaseError as e:
@@ -347,9 +518,11 @@ class Handler(BaseHTTPRequestHandler):
                 raise Reject(404, "That project isn't in your account.")
             return self._json(200, {"project": data})
         if url.path.startswith("/api/jobs/"):
-            job = jobs.get(url.path.rsplit("/", 1)[-1])
+            limit_or_reject("poll", user["id"])
+            job_id = url.path.rsplit("/", 1)[-1]
+            job = jobs.get(job_id)
             if not job or job.user_id != user["id"]:
-                return self._json(404, {"error": "This job is no longer running. The server may have restarted."})
+                return self._json(404, {"error": self._lost_job(job_id, user)})
             try:
                 after = max(0, int(parse_qs(url.query).get("after", ["0"])[0]))
             except ValueError:
@@ -359,6 +532,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def _post_api(self, url):
         if url.path == "/api/check-email":
+            limit_or_reject("public", self._client_ip())
             email = str(self._read_json().get("email", "")).strip()
             if "@" not in email:
                 raise Reject(400, "Enter a full email address.")
@@ -368,12 +542,15 @@ class Handler(BaseHTTPRequestHandler):
         if url.path == "/api/stripe/webhook":
             return self._stripe_webhook()
         if url.path == "/api/profile/resume":
-            return self._upload_resume(self._user(), url)
+            user = self._user()
+            limit_or_reject("upload", user["id"])
+            return self._upload_resume(user, url)
         if url.path == "/api/profile/onboarded":
             self._user()
             return self._json(200, supa.rpc_as(self._token, "sociai_finish_onboarding"))
         if url.path == "/api/checkout":
             user = self._user()
+            limit_or_reject("billing", user["id"])
             plan = self._read_json().get("plan")
             if plan not in PLANS:
                 raise Reject(400, "Choose the credit pack or the monthly plan.")
@@ -385,6 +562,7 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(200, {"url": billing.checkout_url(user["id"], customer, plan)})
         if url.path == "/api/billing-portal":
             user = self._user()
+            limit_or_reject("billing", user["id"])
             self._billing()
             customer = supa.rpc("sociai_get_customer", p_user=user["id"]).get("customer")
             if not customer:
@@ -406,6 +584,7 @@ class Handler(BaseHTTPRequestHandler):
             work = build(data, resume)
         except (KeyError, TypeError, ValueError, AttributeError):
             raise Reject(400, "The request is missing fields or has the wrong shape.")
+        limit_or_reject("job", user["id"])  # well-formed starts only; a malformed one costs nothing
         self._activate(user)
         started = supa.rpc("sociai_start_job", p_user=user["id"], p_project=project, p_kind=kind,
                            p_max_running=settings.max_running, p_global_daily=settings.global_daily_limit)
@@ -423,7 +602,7 @@ class Handler(BaseHTTPRequestHandler):
                          **({"drafts_left": started["drafts_left"]} if "drafts_left" in started else {})})
 
     def _put_api(self, url):
-        user = self._user()
+        self._user()
         if url.path == "/api/profile":
             data = self._read_json()
             fields = {
@@ -479,6 +658,7 @@ class Handler(BaseHTTPRequestHandler):
         if url.path.startswith("/api/projects/"):
             return self._json(200, supa.rpc_as(self._token, "sociai_delete_project", p_id=self._project_id(url)))
         if url.path == "/api/account":
+            limit_or_reject("delete", user["id"])
             if self._read_json().get("confirm") != "DELETE":
                 raise Reject(400, 'Send {"confirm": "DELETE"} to delete your account.')
             return self._delete_account(user)
@@ -561,6 +741,25 @@ class Handler(BaseHTTPRequestHandler):
               f"(balance {result['credits']})", flush=True)
         self._json(200, {"received": True, "granted": result["granted"]})
 
+    def _lost_job(self, job_id, user):
+        """A polled job this server doesn't have. If the database still shows it running for this
+        user, the server restarted while it ran: close it now (a research run gets its credit back)
+        instead of leaving it to the 15-minute cleanup, which could also block new jobs meanwhile."""
+        message = "This job is no longer running. The server may have restarted."
+        if not UUID.match(job_id):
+            return message
+        try:
+            rows = supa.rows_as(self._token, "GET", "jobs", f"select=id,kind,status&id=eq.{job_id}&user_id=eq.{user['id']}")
+            if not rows or rows[0].get("status") != "running":
+                return message
+            supa.rpc("sociai_finish_job", p_job=job_id, p_status="error", p_usage={"lost": "server restarted"})
+        except SupabaseError as e:
+            print(f"[run] couldn't close lost job {job_id}: {e}", flush=True)
+            return message
+        print(f"[run] closed lost job {job_id} for {user['id']}", flush=True)
+        return ("The server restarted while this was running, so it stopped. "
+                + ("Your credit was refunded. " if rows[0].get("kind") == "research" else "It didn't use a credit. ") + "Try again.")
+
     def _profile(self):
         profile = supa.rpc_as(self._token, "sociai_get_profile")
         if not profile:  # no profile row yet: create it with the sign-up rules, then read it
@@ -637,7 +836,7 @@ class Handler(BaseHTTPRequestHandler):
             raise Reject(503, "This server isn't set up for accounts yet.")
         auth = self.headers.get("Authorization", "")
         token = auth[7:].strip() if auth.lower().startswith("bearer ") else ""
-        user = verify_token(token) if token else None
+        user = verify_token(token, self._client_ip()) if token else None
         if not user or not user.get("id"):
             raise Reject(401, "Please sign in.")
         self._token, self._uid, self._email = token, user["id"], user.get("email")
@@ -660,7 +859,13 @@ class Handler(BaseHTTPRequestHandler):
 
     def _client_ip(self):
         if settings.trust_proxy:
-            # Behind a proxy (Render), the original client is the first X-Forwarded-For entry.
+            # Behind Cloudflare and Render. Cloudflare sets CF-Connecting-IP itself on every request
+            # it proxies, while the first X-Forwarded-For entry is whatever the client sent, so the
+            # Cloudflare header wins when it's there. (Requests straight to the Render origin could
+            # still forge it; they bypass Cloudflare's own protections anyway.)
+            for name in ("CF-Connecting-IP", "True-Client-IP"):
+                if self.headers.get(name, "").strip():
+                    return self.headers[name].strip()
             first = self.headers.get("X-Forwarded-For", "").split(",")[0].strip()
             if first:
                 return first
@@ -697,8 +902,8 @@ class Handler(BaseHTTPRequestHandler):
             raise Reject(400, "The request body must be a JSON object.")
         return data
 
-    def _json(self, code, obj):
-        self._send(code, json.dumps(obj).encode(), "application/json")
+    def _json(self, code, obj, headers=None):
+        self._send(code, json.dumps(obj).encode(), "application/json", headers=headers)
 
     def _drain(self):
         """Read a body no one read (e.g. a request refused with 401 before it was parsed). Closing the
@@ -718,20 +923,34 @@ class Handler(BaseHTTPRequestHandler):
                 break
             left -= len(chunk)
 
-    def _redirect(self, location):
+    def _redirect(self, location, code=302):
         self._drain()
-        self.send_response(302)
+        self.send_response(code)
         self.send_header("Location", location)
         self.send_header("Content-Length", "0")
+        self._security_headers()
         self.end_headers()
 
-    def _send(self, code, body, ctype, cache="no-cache"):
+    def _send(self, code, body, ctype, cache="no-cache", page=None, headers=None):
+        """page names the HTML page being served (for its Content-Security-Policy)."""
         self._drain()
         self.send_response(code)
         self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", cache)
+        self._security_headers(page, headers)
         self.end_headers()
-        self.wfile.write(body)
+        if self.command != "HEAD":
+            self.wfile.write(body)
+
+    def _security_headers(self, page=None, headers=None):
+        for name, value in SECURITY_HEADERS.items():
+            self.send_header(name, value)
+        if settings.trust_proxy and self.headers.get("X-Forwarded-Proto", "https") != "http":  # only over HTTPS
+            self.send_header("Strict-Transport-Security", HSTS)
+        self.send_header("Content-Security-Policy", csp(page) if page else NO_CONTENT_CSP)
+        for name, value in (headers or {}).items():
+            self.send_header(name, value)
 
     def log_message(self, fmt, *args):
         if not self.path.startswith(("/api/jobs/", "/healthz")):  # polling and health checks would drown the log

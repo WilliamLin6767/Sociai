@@ -198,6 +198,12 @@ span.knot { cursor: default; opacity: .7; }
   .threadnav li + li::before { flex: 1; width: auto; }
   .brand-word { display: none; }
 }
+@media (max-width: 600px) {
+  .credits-word { display: none; } /* "2 credits" -> "2", so the page name next to it has room */
+  .crumb-who { font-size: 15.5px; }
+  .bar-inner { gap: var(--s3); }
+  .bar-end { gap: var(--s2); }
+}
 @media (max-width: 420px) { .knot .t { font-size: 11.5px; } }
 
 /* ───────── Buttons ───────── */
@@ -1065,4 +1071,4 @@ body.focus-on .bar:hover, body.focus-on .bar:focus-within { opacity: 1; }
 .reach-best { display: block; font: 400 16px/1.5 var(--serif); color: var(--ink-2); }
 .reach-none { margin: var(--s3) 0 0; font: italic 400 16px/1.5 var(--serif); color: var(--ink-3); }
 .drawer .reach-row { grid-template-columns: 72px minmax(0, 1fr) auto; }
-@media (max-width: 600px) { .reach-row { grid-template-columns: minmax(0, 1fr) auto; } .reach-k { grid-column: 1 / -1; } }
+@media (max-width: 600px) { .reach-row, .drawer .reach-row { grid-template-columns: minmax(0, 1fr) auto; } .reach-k { grid-column: 1 / -1; } }
