@@ -259,6 +259,7 @@ async function saveBriefToProfile(b) {
 }
 
 const creditLabel = (n) => (n === null ? "…" : `${n} credit${n === 1 ? "" : "s"}`);
+const creditHTML = (n) => (n === null ? "…" : `${n}<span class="credits-word"> credit${n === 1 ? "" : "s"}</span>`); // phones show the number only
 const creditNote = () => account.credits === 0
   ? 'You\'re out of credits. <a class="link-btn" href="#/pricing">Get more credits</a>'
   : `Uses 1 credit, which includes up to 3 drafts${account.credits === null ? "" : `. You have ${creditLabel(account.credits)}`}. Sociai never sends anything for you.`;
@@ -268,7 +269,7 @@ function setCredits(n) {
   account.credits = n;
   const el = $("#credits-n");
   if (el) {
-    el.textContent = creditLabel(n);
+    el.innerHTML = creditHTML(n);
     if (changed) { el.classList.remove("bump"); void el.offsetWidth; el.classList.add("bump"); }
   }
   const note = $("#credit-note");
@@ -277,7 +278,7 @@ function setCredits(n) {
 
 // The credit balance links to Pricing; the round initial next to it opens the account menu.
 const accountButton = () => `<a class="credits-btn" href="#/pricing" title="Get more credits" aria-label="${creditLabel(account.credits)}. Get more credits">
-    <span class="credits-dot" aria-hidden="true"></span><span id="credits-n">${creditLabel(account.credits)}</span></a>
+    <span class="credits-dot" aria-hidden="true"></span><span id="credits-n">${creditHTML(account.credits)}</span></a>
   <div class="account"><button type="button" class="avatar-btn" data-act="account" aria-haspopup="true" aria-expanded="false"
     aria-label="Your account: profile, billing and sign out" title="${esc(account.email || "Your account")}">${esc((account.email || "?").trim()[0] || "?")}</button></div>`;
 
@@ -307,8 +308,10 @@ const termsRecord = () => ({ terms_version: TERMS_VERSION, terms_accepted_at: ne
 const LEGAL_LINKS = '<a class="link-btn" href="/terms" target="_blank" rel="noopener">Terms</a> and <a class="link-btn" href="/privacy" target="_blank" rel="noopener">Privacy Policy</a>';
 const agreeBox = (id) => `<label class="agree" for="${id}"><input type="checkbox" id="${id}"><span>I agree to the ${LEGAL_LINKS}</span></label>`;
 const EMAIL_RE = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
+const GATE_TITLES = { signin: "Sign in", signup: "Create your account", forgot: "Reset your password", "new-password": "Set a new password", terms: "Agree to the Terms" };
 
 function showSignIn({ message = "", email = "", screen = "signin", notice = "" } = {}) {
+  document.title = `${GATE_TITLES[screen]} · Sociai`;
   if (signInEl && screen === "signin" && !notice && $("#signin-password", signInEl)) { if (message) showSignInError(message); return; }
   if (!signInEl) {
     closeMenus(); closeDrawer(); closePop();
@@ -551,6 +554,7 @@ function drawTerms() {
 // kind: "confirm" (just signed up), "unconfirmed" (signed in before confirming), "reset".
 function drawCheckInbox(addr, kind) {
   const reset = kind === "reset";
+  document.title = "Check your email · Sociai";
   const title = reset ? "Check your email for a reset link" : "Check your email to confirm your account";
   const text = reset
     ? `If there's a Sociai account for <b>${esc(addr)}</b>, we've sent it a link to set a new password. Open it in this browser. It can take a minute, and sometimes lands in spam.`
@@ -735,6 +739,7 @@ function render({ instant = false } = {}) {
     closePop(); closeDrawer(); closeMenus();
     document.body.classList.remove("focus-on");
     renderBar(route, p);
+    document.title = p ? `${nameOf(p)} · Sociai` : PAGE_TITLES[route.view] ? `${PAGE_TITLES[route.view]} · Sociai` : "Sociai";
     resetMain();
     const fn = PAGES[route.view] || VIEWS[route.stage];
     view = { route, cleanup: fn(p, from) };
@@ -2572,6 +2577,23 @@ async function startSession(session) {
 
 const LINK_ERROR = "That link has expired or was already used.";
 
+// The Meta Pixel, loaded here rather than in app.html so its first PageView happens after boot()
+// has taken the one-time codes from sign-in email links out of the URL. The public pages load it
+// in their HTML as usual (they never carry those codes: / sends them straight on to /app).
+const META_PIXEL_ID = "1808625520381378";
+function loadPixel() {
+  if (window.fbq) return;
+  const n = (window.fbq = function () { n.callMethod ? n.callMethod.apply(n, arguments) : n.queue.push(arguments); });
+  if (!window._fbq) window._fbq = n;
+  Object.assign(n, { push: n, loaded: true, version: "2.0", queue: [] });
+  const s = document.createElement("script");
+  s.async = true;
+  s.src = "https://connect.facebook.net/en_US/fbevents.js";
+  document.head.appendChild(s);
+  fbq("init", META_PIXEL_ID);
+  fbq("track", "PageView");
+}
+
 async function boot() {
   // Email links come back as ?auth=confirmed or ?auth=reset, with a one-time ?code= (PKCE) or,
   // with custom email templates, ?token_hash=...&type=...
@@ -2599,6 +2621,7 @@ async function boot() {
   for (const k of ["auth", "code", "token_hash", "type", "error", "error_code", "error_description", "sb_flow_id", "mode"]) query.delete(k);
   const hash = /(^#|&)(access_token|error)=/.test(location.hash) ? "" : location.hash;
   history.replaceState(null, "", location.pathname + (query.toString() ? `?${query}` : "") + hash);
+  loadPixel();
 
   resettingPassword = kind === "reset" && !!session && !linkError;
   onAuthChange((event, s) => {

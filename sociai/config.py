@@ -64,6 +64,7 @@ class Settings:
             supabase_anon_key=os.environ.get("SUPABASE_ANON_KEY", ""),
             supabase_service_key=os.environ.get("SUPABASE_SERVICE_ROLE_KEY", ""),
             global_daily_limit=_env_int("SOCIAI_GLOBAL_DAILY_LIMIT", 100),
+            max_accounts_per_ip=_env_int("SOCIAI_MAX_ACCOUNTS_PER_IP", 3),
             trust_proxy=os.environ.get("SOCIAI_TRUST_PROXY", "") in ("1", "true", "yes"),
             disposable_domains=load_blocklist(),
             public_url=(os.environ.get("PUBLIC_URL") or os.environ.get("RENDER_EXTERNAL_URL") or "http://localhost:8000").rstrip("/"),

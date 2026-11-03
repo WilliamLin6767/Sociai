@@ -63,11 +63,15 @@ Each new account gets **2 free credits**. **1 credit = one research run plus up 
 Abuse limits are enforced in the database:
 
 - Disposable email domains (`sociai/disposable_domains.txt`) can't use the app.
-- At most 3 new accounts per IP address per day.
+- At most 3 new accounts per IP address per day (`SOCIAI_MAX_ACCOUNTS_PER_IP`; raise it for campus or office networks that share one IP).
 - At most 2 research or draft jobs running at once per user.
 - A global cap on jobs per UTC day (`SOCIAI_GLOBAL_DAILY_LIMIT`, default 100).
+- Per-minute rate limits (`RATE` in `sociai/web.py`): per IP for the API as a whole, the public email check and token checks against Supabase; per user for job starts, checkout and portal sessions, resume uploads and account deletion. Over the budget, the API answers 429 with `Retry-After`.
+- Research and draft requests cap every field (target 500, goal 2,000, background 20,000 characters, 10 samples of 20,000) and are checked before a credit is taken.
 
 The browser never sees raw API errors; details go to the server log.
+
+**Security headers.** Every response carries `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`, `Referrer-Policy` and `Permissions-Policy`; behind the proxy (`SOCIAI_TRUST_PROXY=1`) HTTPS responses also carry HSTS, and plain-HTTP requests are redirected. Pages get a `Content-Security-Policy` that names every origin they load from (Supabase, jsdelivr for supabase-js, Google Fonts, Meta's pixel) and allows the inline scripts in the HTML files by hash, computed from the files at startup, so there is no `unsafe-inline` for scripts. Adding a third-party script means adding its origin to `csp()` in `sociai/web.py`; adding an inline script to a page needs nothing, its hash is picked up. In the app the Meta Pixel is loaded by `app.js` only after the one-time codes from sign-in email links have been taken out of the URL, so they never reach Meta.
 
 ## Profiles and saved projects
 
@@ -210,6 +214,7 @@ All settings are environment variables, or lines in `.env` (see `.env.example`).
 | `SUPABASE_ANON_KEY` | (required) | Publishable (anon) key. Sent to the browser for sign-in. |
 | `SUPABASE_SERVICE_ROLE_KEY` | (required) | Secret (service_role) key. Server only: it changes credits through the database functions. |
 | `SOCIAI_GLOBAL_DAILY_LIMIT` | 100 | Research + draft jobs per UTC day across all users. |
+| `SOCIAI_MAX_ACCOUNTS_PER_IP` | 3 | New accounts per IP per day before the next is blocked. Campus networks share one IP. |
 | `SOCIAI_RESEARCH_MODEL`, `SOCIAI_DRAFT_MODEL` | `claude-sonnet-5-5` | Model per step. See "Models and cost" above. |
 | `SOCIAI_STRIPE_MODE` | `test` | `test` or `live`. The secret key and webhook events must be from this mode. |
 | `STRIPE_SECRET_KEY` | unset | Stripe secret key for that mode (`sk_test_...` or `sk_live_...`). Payments are off without it, or if it doesn't match the mode. |

@@ -202,6 +202,7 @@ class ContactsAPI(unittest.TestCase):
     def setUp(self):
         self.fake = web.supa = FakeSupabase()
         web._tokens.clear()
+        web.limiter.reset()
 
     def call(self, method, path, body=None, token="token-a", today="2026-11-02"):
         if today:
